@@ -12,7 +12,7 @@ const expenseSchema = new mongoose.Schema({
   remarks:     { type: String, default: '' },
   expType:     { type: String, default: 'Aadi Festival' },
   vendorId:    { type: require('mongoose').Schema.Types.ObjectId, ref: 'Vendor' },
-  paidById:    { type: require('mongoose').Schema.Types.ObjectId, ref: 'Trustee' },
+  paidById:    { type: require('mongoose').Schema.Types.ObjectId, ref: 'User', default: null },
   poojaTypeId: { type: require('mongoose').Schema.Types.ObjectId, ref: 'PoojaMaster' },
   paymentId:   { type: require('mongoose').Schema.Types.ObjectId, ref: 'Payment' },
   year:        { type: Number, default: () => new Date().getFullYear(), index: true },

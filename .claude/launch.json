@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "spt-api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "spt-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../spt-web", "run", "dev"],
+      "port": 3001
+    }
+  ]
+}

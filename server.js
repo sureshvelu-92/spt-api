@@ -9,7 +9,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ── DB connect ────────────────────────────────────────────
-mongoose.connect(process.env.MONGODB_URI)
+mongoose.connect(process.env.MONGODB_URI, { autoSelectFamily: false })
   .then(() => console.log('MongoDB connected'))
   .catch(err => { console.error('MongoDB error:', err); process.exit(1); });
 

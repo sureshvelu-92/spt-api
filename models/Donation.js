@@ -9,7 +9,8 @@ const donationSchema = new mongoose.Schema({
   received:     { type: Number, default: 0 },
   balance:      { type: Number, default: 0 },
   mode:         { type: String, default: 'Cash' },
-  receivedBy:   { type: String, default: '' },
+  receivedBy:   { type: String, default: '' },          // display name (kept for legacy)
+  receivedById: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   notes:        { type: String, default: '' },
   status:       { type: String, default: 'Pending',
                   enum: ['Pending','Received','Partially Received'] },

@@ -6,9 +6,16 @@ const AppConfig         = require('../models/AppConfig');
 const Vendor            = require('../models/Vendor');
 const VendorTransaction = require('../models/VendorTransaction');
 const Transaction       = require('../models/Transaction');
+const User              = require('../models/User');
 
 const TOKEN = process.env.API_TOKEN || 'SPTT@1985';
 const RCP_YEAR = '2026';
+
+/** Returns true if the donType is a pooja/ceremony that uses vendor breakdown */
+function isPoojaType(donType) {
+  const t = (donType || '').toLowerCase();
+  return t.includes('pooja') || t.includes('anniversary');
+}
 
 const ok  = (data) => ({ status: 'ok',    ...data });
 const err = (msg)  => ({ status: 'error', message: msg });
@@ -30,6 +37,7 @@ router.get('/', auth, async (req, res) => {
         return res.json(ok({ message: 'Connected ✓', version: 1 }));
 
       case 'addDonation':     return res.json(await addDonation(p));
+      case 'addPooja':        return res.json(await addPooja(p));
       case 'addInKindDonation': return res.json(await addInKind(p));
       case 'addExpense':      return res.json(await addExpense(p));
       case 'getReceipts':     return res.json(await getReceipts());
@@ -56,8 +64,15 @@ router.get('/', auth, async (req, res) => {
       case 'getSequences':      return res.json(await getSequences());
       case 'setSequence':       return res.json(await setSequence(p));
 
-      case 'getLedger':         return res.json(await getLedger(p));
-      case 'addTransaction':    return res.json(await addManualTransaction(p));
+      case 'getLedger':             return res.json(await getLedger(p));
+      case 'addTransaction':        return res.json(await addManualTransaction(p));
+      case 'getCombinedLedger':     return res.json(await getCombinedLedger(p));
+      case 'getCashHolders':        return res.json(await getCashHolders(p));
+
+      case 'getUsers':          return res.json(await getUsers());
+      case 'addUser':           return res.json(await addUser(p));
+      case 'verifyPin':         return res.json(await verifyPin(p));
+      case 'setPin':            return res.json(await setPin(p));
 
       default:
         return res.json(err('Unknown action'));
@@ -93,31 +108,39 @@ async function addDonation(p) {
 
   const donDate = p.date ? new Date(p.date) : new Date();
 
-  await Donation.create({
+  const donationDoc = {
     receiptNo, date: donDate,
     donor: p.donor || '', phone: p.phone || '',
     amount, received, balance,
     mode: isPend ? '' : (p.mode || 'Cash'),
-    receivedBy: p.receivedBy || '',
+    receivedBy:   p.receivedBy   || '',
+    receivedById: p.receivedById ? require('mongoose').Types.ObjectId.isValid(p.receivedById) ? p.receivedById : null : null,
     notes: p.notes || p.purpose || '',
     status, isPending: isPend,
     donType: p.donType || 'Aadi Festival',
     personName: p.personName || '',
     poojaType:    p.poojaType    || '',
     poojaVariant: p.poojaVariant || '',
-  });
+  };
+
+  // Upsert on receiptNo — safe to re-submit same receipt without duplicating
+  await Donation.findOneAndUpdate(
+    { receiptNo },
+    { $set: donationDoc },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 
   // ── General Ledger: credit entry when money is actually received ──
   if (received > 0) {
     try {
       const txnSeq = await AppConfig.nextSeq('txn');
       const txnNo  = `${RCP_YEAR}/TXN/${txnSeq}`;
-      const isPooja = (p.donType || '') === 'Pooja';
+      const isPooja = isPoojaType(p.donType);
       await Transaction.create({
         txnNo, date: donDate, type: 'credit',
         category: isPooja ? 'Pooja Income' : 'Donation',
         amount:   received,
-        description: p.notes || p.purpose || (isPooja ? `${p.poojaType} (${p.poojaVariant})` : ''),
+        description: p.notes || p.purpose || (isPooja ? `${p.poojaType || p.donType}${p.poojaVariant ? ` (${p.poojaVariant})` : ''}` : ''),
         party:    p.donor || '',
         mode:     isPend ? '' : (p.mode || 'Cash'),
         refType:  'donation', refId: receiptNo,
@@ -128,15 +151,18 @@ async function addDonation(p) {
   }
 
   // ── Vendor Ledger: create credit entries from AppConfig breakdown ──
-  if ((p.donType || '') === 'Pooja' && p.poojaType && p.poojaVariant) {
+  // Only run for donations that carry a specific poojaType + variant from the breakdown config
+  if (p.poojaType && p.poojaVariant) {
     try {
       const cfg        = await AppConfig.get();
       const variantKey = p.poojaVariant === 'Special' ? 'special' : 'regular';
       const breakdown  = cfg.poojaBreakdown?.[variantKey] || [];
       if (breakdown.length) {
-        const description = `${p.poojaType} (${p.poojaVariant}) — ${receiptNo}`;
+        const personSuffix = p.personName ? ` | ${p.personName}` : '';
+        const description  = `${p.poojaType} (${p.poojaVariant}) — ${receiptNo}${personSuffix}`;
         const txns = breakdown.map(line => ({
           vendorName: line.vendorName,
+          vendorId:   line.vendorId   || null,
           date:       donDate,
           description,
           item:       line.item || '',
@@ -156,6 +182,91 @@ async function addDonation(p) {
   }
 
   return ok({ receiptNo, seq });
+}
+
+/**
+ * addPooja — run a pooja from temple fund (no donor, no receipt)
+ *
+ * Required: poojaType, poojaVariant
+ * Optional: date, notes, recordedBy
+ *
+ * Creates:
+ *   1. VendorTransaction credits  (breakdown payables)
+ *   2. Expense entry              (temple fund covers total cost)
+ *   3. Transaction debit          (general ledger)
+ */
+async function addPooja(p) {
+  if (!p.poojaType)    return err('poojaType required');
+  if (!p.poojaVariant) return err('poojaVariant required');
+
+  const poojaDate  = p.date ? new Date(p.date) : new Date();
+  const cfg        = await AppConfig.get();
+  const variantKey = p.poojaVariant === 'Special' ? 'special' : 'regular';
+  const breakdown  = cfg.poojaBreakdown?.[variantKey] || [];
+
+  if (!breakdown.length) return err('No pooja breakdown configured in AppConfig');
+
+  const totalCost  = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
+  const label      = `${p.poojaType} (${p.poojaVariant}) — Temple Fund`;
+
+  // ── 1. Expense entry ─────────────────────────────────────
+  const expSeq    = await AppConfig.nextSeq('expense');
+  const voucherNo = `${RCP_YEAR}/EXP/${expSeq}`;
+  await Expense.create({
+    voucherNo,
+    date:        poojaDate,
+    vendor:      'Temple Fund',
+    description: label,
+    category:    'Puja & Rituals',
+    expType:     'Temple Operations',
+    amount:      totalCost,
+    mode:        p.mode || 'Cash',
+    paidBy:      p.recordedBy || '',
+    remarks:     p.notes || '',
+    year:        poojaDate.getFullYear(),
+  });
+
+  // ── 2. Transaction debit (general ledger) ────────────────
+  try {
+    const txnSeq = await AppConfig.nextSeq('txn');
+    const txnNo  = `${RCP_YEAR}/TXN/${txnSeq}`;
+    await Transaction.create({
+      txnNo, date: poojaDate, type: 'debit',
+      category:    'Expense',
+      amount:      totalCost,
+      description: label,
+      party:       'Temple Fund',
+      mode:        p.mode || 'Cash',
+      refType:     'expense', refId: voucherNo,
+      recordedBy:  p.recordedBy || '',
+      year:        poojaDate.getFullYear(),
+    });
+  } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
+
+  // ── 3. VendorTransaction credits (payables) ──────────────
+  const vtxns = breakdown.map(line => ({
+    vendorName:  line.vendorName,
+    vendorId:    line.vendorId || null,
+    date:        poojaDate,
+    description: label,
+    item:        line.item || '',
+    credit:      line.amount || 0,
+    debit:       0,
+    refType:     'pooja',
+    refId:       voucherNo,      // expense voucher is the reference
+    poojaName:   p.poojaType,
+    variant:     p.poojaVariant,
+    isSettled:   false,
+  }));
+  await VendorTransaction.insertMany(vtxns);
+
+  return ok({
+    voucherNo,
+    poojaType:   p.poojaType,
+    poojaVariant: p.poojaVariant,
+    totalCost,
+    breakdown:   breakdown.length,
+  });
 }
 
 async function addInKind(p) {
@@ -184,7 +295,9 @@ async function addExpense(p) {
     voucherNo, date: expDate,
     vendor: p.vendor || '', description: p.description || '',
     category: p.category || '', amount,
-    mode: p.mode || 'Cash', paidBy: p.paidBy || '',
+    mode: p.mode || 'Cash',
+    paidBy:   p.paidBy   || '',
+    paidById: p.paidById ? require('mongoose').Types.ObjectId.isValid(p.paidById) ? p.paidById : null : null,
     remarks: p.remarks || '', expType: p.expType || 'Aadi Festival',
   });
 
@@ -233,18 +346,32 @@ async function getLastSeq(type) {
 }
 
 async function updateReceived(p) {
-  const doc = await Donation.findOneAndUpdate(
-    { receiptNo: p.receiptNo },
-    {
-      received: parseFloat(p.received) || 0,
-      balance:  (parseFloat(p.amount) || 0) - (parseFloat(p.received) || 0),
-      status:   p.status || 'Received',
-      mode:     p.mode || 'Cash',
-    },
-    { new: true }
-  );
-  if (!doc) return err('Receipt not found: ' + p.receiptNo);
-  return ok({ receiptNo: p.receiptNo });
+  // Support lookup by _id or receiptNo
+  const query = p.id
+    ? { _id: p.id }
+    : { receiptNo: p.receiptNo };
+
+  const existing = await Donation.findOne(query).lean();
+  if (!existing) return err('Donation not found');
+
+  const addedAmt   = parseFloat(p.received) || 0;
+  const newReceived = (existing.received || 0) + addedAmt;
+  const newBalance  = (existing.amount  || 0) - newReceived;
+  const newStatus   = newBalance <= 0 ? 'Received'
+    : newReceived > 0 ? 'Partially Received' : 'Pending';
+
+  const update = {
+    received:   newReceived,
+    balance:    Math.max(0, newBalance),
+    status:     newStatus,
+    isPending:  newStatus !== 'Received',
+    mode:       p.mode || existing.mode || 'Cash',
+  };
+  if (p.receivedBy) update.receivedBy = p.receivedBy;
+
+  const doc = await Donation.findOneAndUpdate(query, { $set: update }, { new: true });
+  if (!doc) return err('Update failed');
+  return ok({ receiptNo: doc.receiptNo, status: doc.status });
 }
 
 async function getAllData() {
@@ -266,10 +393,10 @@ async function getMonthlyReport(p) {
   const year  = parseInt(p.year  || new Date().getFullYear());
   const month = parseInt(p.month || new Date().getMonth() + 1); // 1-based
 
-  const from = new Date(year, month - 1, 1);
-  const to   = new Date(year, month, 1);
+  const from = new Date(Date.UTC(year, month - 1, 1));
+  const to   = new Date(Date.UTC(year, month, 1));
 
-  const [donAgg, expAgg, donRows, expRows] = await Promise.all([
+  const [donAgg, expAgg, donRows, expRows, otherIncAgg] = await Promise.all([
     // Donation summary
     Donation.aggregate([
       { $match: { date: { $gte: from, $lt: to } } },
@@ -297,6 +424,11 @@ async function getMonthlyReport(p) {
     Donation.find({ date: { $gte: from, $lt: to } }).sort({ date: 1 }).lean(),
     // Expense detail rows
     Expense.find({ date: { $gte: from, $lt: to } }).sort({ date: 1 }).lean(),
+    // Other income (manual Transaction credits: interest, asset sale, scrap, etc.)
+    Transaction.aggregate([
+      { $match: { date: { $gte: from, $lt: to }, type: 'credit', refType: { $in: ['manual'] } } },
+      { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
   ]);
 
   const dSumRaw = donAgg[0] || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0, byType: [] };
@@ -323,6 +455,16 @@ async function getMonthlyReport(p) {
 
   const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+  const otherIncomeByCategory = {};
+  let otherIncomeTotal = 0;
+  (otherIncAgg || []).forEach(r => {
+    const k = r._id || 'Misc Income';
+    otherIncomeByCategory[k] = r.total;
+    otherIncomeTotal += r.total;
+  });
+
+  const totalIncome = dSumRaw.totalReceived + otherIncomeTotal;
+
   return ok({
     period:  `${MONTH_NAMES[month]} ${year}`,
     year, month,
@@ -334,6 +476,10 @@ async function getMonthlyReport(p) {
       byType:        donByType,
       rows:          donRows.map(mapDonation),
     },
+    otherIncome: {
+      total:      otherIncomeTotal,
+      byCategory: otherIncomeByCategory,
+    },
     expenses: {
       totalSpent:  eSumRaw.totalSpent,
       count:       eSumRaw.count,
@@ -341,7 +487,8 @@ async function getMonthlyReport(p) {
       byVendor:    expByVendor,
       rows:        expRows.map(mapExpense),
     },
-    netBalance: dSumRaw.totalReceived - eSumRaw.totalSpent,
+    totalIncome,
+    netBalance: totalIncome - eSumRaw.totalSpent,
   });
 }
 
@@ -349,10 +496,10 @@ async function getMonthlyReport(p) {
 // ?action=getYearlyReport&year=2026
 async function getYearlyReport(p) {
   const year = parseInt(p.year || new Date().getFullYear());
-  const from = new Date(year, 0, 1);
-  const to   = new Date(year + 1, 0, 1);
+  const from = new Date(Date.UTC(year, 0, 1));
+  const to   = new Date(Date.UTC(year + 1, 0, 1));
 
-  const [donMonthly, expMonthly, donByType, expByCat, expByVendor] = await Promise.all([
+  const [donMonthly, expMonthly, donByType, expByCat, expByVendor, otherIncMonthly] = await Promise.all([
     // Donations month-by-month
     Donation.aggregate([
       { $match: { date: { $gte: from, $lt: to } } },
@@ -393,41 +540,57 @@ async function getYearlyReport(p) {
       { $sort: { total: -1 } },
       { $limit: 20 },
     ]),
+    // Other income month-by-month (manual Transaction credits)
+    Transaction.aggregate([
+      { $match: { date: { $gte: from, $lt: to }, type: 'credit', refType: { $in: ['manual'] } } },
+      { $group: { _id: { $month: '$date' }, total: { $sum: '$amount' } } },
+      { $sort: { _id: 1 } },
+    ]),
   ]);
 
   const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   // Build 12-month grid
-  const donMap = Object.fromEntries(donMonthly.map(r => [r._id, r]));
-  const expMap = Object.fromEntries(expMonthly.map(r => [r._id, r]));
+  const donMap    = Object.fromEntries(donMonthly.map(r => [r._id, r]));
+  const expMap    = Object.fromEntries(expMonthly.map(r => [r._id, r]));
+  const otherMap  = Object.fromEntries((otherIncMonthly || []).map(r => [r._id, r.total]));
+
   const monthlyGrid = Array.from({ length: 12 }, (_, i) => {
     const m   = i + 1;
     const don = donMap[m] || { pledged: 0, received: 0, balance: 0, count: 0 };
     const exp = expMap[m] || { spent: 0, count: 0 };
+    const other = otherMap[m] || 0;
+    const totalIncome = don.received + other;
     return {
-      month:     MONTH_NAMES[m],
-      monthNo:   m,
-      pledged:   don.pledged,
-      received:  don.received,
-      balance:   don.balance,
-      donCount:  don.count,
-      spent:     exp.spent,
-      expCount:  exp.count,
-      net:       don.received - exp.spent,
+      month:       MONTH_NAMES[m],
+      monthNo:     m,
+      pledged:     don.pledged,
+      received:    don.received,
+      otherIncome: other,
+      totalIncome,
+      balance:     don.balance,
+      donCount:    don.count,
+      spent:       exp.spent,
+      expCount:    exp.count,
+      net:         totalIncome - exp.spent,
     };
   });
 
-  const totalReceived = monthlyGrid.reduce((s, r) => s + r.received, 0);
-  const totalSpent    = monthlyGrid.reduce((s, r) => s + r.spent, 0);
+  const totalReceived    = monthlyGrid.reduce((s, r) => s + r.received, 0);
+  const totalOtherIncome = monthlyGrid.reduce((s, r) => s + r.otherIncome, 0);
+  const totalIncome      = totalReceived + totalOtherIncome;
+  const totalSpent       = monthlyGrid.reduce((s, r) => s + r.spent, 0);
 
   return ok({
     year,
     summary: {
-      totalPledged:  monthlyGrid.reduce((s, r) => s + r.pledged, 0),
+      totalPledged:    monthlyGrid.reduce((s, r) => s + r.pledged, 0),
       totalReceived,
-      totalBalance:  monthlyGrid.reduce((s, r) => s + r.balance, 0),
+      totalOtherIncome,
+      totalIncome,
+      totalBalance:    monthlyGrid.reduce((s, r) => s + r.balance, 0),
       totalSpent,
-      netBalance:    totalReceived - totalSpent,
+      netBalance:      totalIncome - totalSpent,
     },
     monthlyGrid,
     donByType:   donByType.map(r => ({ type: r._id || 'Others', total: r.total, count: r.count })),
@@ -698,8 +861,8 @@ async function setSequence(p) {
  */
 async function getLedger(p) {
   const year = parseInt(p.year || new Date().getFullYear());
-  const from = new Date(year, 0, 1);
-  const to   = new Date(year + 1, 0, 1);
+  const from = new Date(Date.UTC(year, 0, 1));
+  const to   = new Date(Date.UTC(year + 1, 0, 1));
 
   const filter = { date: { $gte: from, $lt: to } };
   if (p.type)     filter.type     = p.type;
@@ -748,6 +911,253 @@ async function addManualTransaction(p) {
     year,
   });
   return ok({ txnNo, data: txn });
+}
+
+/**
+ * getCombinedLedger — unified view of donations + expenses + manual transactions
+ *
+ * Merges three sources into one chronological cash-book:
+ *   Donation  (received > 0)  → credit
+ *   Expense                   → debit
+ *   Transaction               → credit or debit (manual / vendor payments)
+ *
+ * Query params:
+ *   year     (default: current year)
+ *   type     'credit' | 'debit' | '' (all)
+ *   category filter (optional)
+ *   search   partial match on party/description/refNo
+ */
+async function getCombinedLedger(p) {
+  const year = parseInt(p.year || new Date().getFullYear());
+  const from = new Date(Date.UTC(year, 0, 1));
+  const to   = new Date(Date.UTC(year + 1, 0, 1));
+
+  // ── 1. Donations (received > 0) ──────────────────────────
+  const donations = await Donation.find({
+    date:     { $gte: from, $lt: to },
+    received: { $gt: 0 },
+  }).lean();
+
+  const donRows = donations.map(d => ({
+    _id:         d._id,
+    refNo:       d.receiptNo,
+    date:        d.date,
+    type:        'credit',
+    category:    isPoojaType(d.donType) ? 'Pooja Income' : 'Donation',
+    party:       d.donor,
+    description: d.donType + (d.poojaType ? ` — ${d.poojaType}` : '') + (d.notes ? ` (${d.notes})` : ''),
+    amount:      d.received,
+    mode:        d.mode || 'Cash',
+    recordedBy:  d.receivedBy || '',
+    source:      'donation',
+  }));
+
+  // ── 2. Expenses ──────────────────────────────────────────
+  const expenses = await Expense.find({
+    date: { $gte: from, $lt: to },
+  }).lean();
+
+  const expRows = expenses.map(e => ({
+    _id:         e._id,
+    refNo:       e.voucherNo,
+    date:        e.date,
+    type:        'debit',
+    category:    'Expense',
+    party:       e.vendor || '',
+    description: e.description || e.category || '',
+    amount:      e.amount,
+    mode:        e.mode || 'Cash',
+    recordedBy:  e.paidBy || '',
+    source:      'expense',
+  }));
+
+  // ── 3. Manual transactions (asset sale, interest, vendor settlement, etc.) ──
+  const manualTxns = await Transaction.find({
+    date:    { $gte: from, $lt: to },
+    refType: { $in: ['manual', 'vendor_settlement'] },
+  }).lean();
+
+  const txnRows = manualTxns.map(t => ({
+    _id:         t._id,
+    refNo:       t.txnNo,
+    date:        t.date,
+    type:        t.type,
+    category:    t.category,
+    party:       t.party || '',
+    description: t.description || '',
+    amount:      t.amount,
+    mode:        t.mode || 'Cash',
+    recordedBy:  t.recordedBy || '',
+    source:      'transaction',
+  }));
+
+  // ── 4. Merge + sort by date asc ───────────────────────────
+  let rows = [...donRows, ...expRows, ...txnRows];
+  rows.sort((a, b) => new Date(a.date) - new Date(b.date) || a.refNo.localeCompare(b.refNo));
+
+  // ── 5. Running balance ────────────────────────────────────
+  let balance = 0;
+  rows = rows.map(r => {
+    balance += r.type === 'credit' ? r.amount : -r.amount;
+    return { ...r, runningBalance: balance };
+  });
+
+  // ── 6. Apply filters (after balance) ─────────────────────
+  if (p.type)   rows = rows.filter(r => r.type === p.type);
+  if (p.category) rows = rows.filter(r => r.category === p.category);
+  if (p.search) {
+    const q = p.search.toLowerCase();
+    rows = rows.filter(r =>
+      r.party.toLowerCase().includes(q) ||
+      r.description.toLowerCase().includes(q) ||
+      r.refNo.toLowerCase().includes(q)
+    );
+  }
+
+  // Return newest first for display
+  const reversed = [...rows].reverse();
+
+  const totalCredit = donRows.reduce((s, r) => s + r.amount, 0)
+    + txnRows.filter(r => r.type === 'credit').reduce((s, r) => s + r.amount, 0);
+  const totalDebit  = expRows.reduce((s, r) => s + r.amount, 0)
+    + txnRows.filter(r => r.type === 'debit').reduce((s, r) => s + r.amount, 0);
+
+  return ok({
+    year,
+    totalCredit,
+    totalDebit,
+    netBalance: totalCredit - totalDebit,
+    count:      reversed.length,
+    data:       reversed,
+  });
+}
+
+/**
+ * getCashHolders — shows how much cash each person is currently holding
+ *
+ * Logic:
+ *   Cash collected = sum of Donation.received WHERE mode='Cash' grouped by receivedBy
+ *   Cash remitted  = sum of Expense.amount WHERE paidBy = person AND expType indicates remittance
+ *                    (for now: all cash expenses paid by that person count as remitted/spent)
+ *
+ * Returns per-person: name, userId, totalCollected, totalRemitted, cashInHand
+ */
+async function getCashHolders(p) {
+  const year = parseInt(p.year || new Date().getFullYear());
+  // Use UTC midnight to match how dates are stored (via Date.UTC in migration)
+  const from = new Date(Date.UTC(year,     0, 1));
+  const to   = new Date(Date.UTC(year + 1, 0, 1));
+
+  // Cash donations collected per person
+  const collected = await Donation.aggregate([
+    {
+      $match: {
+        date:     { $gte: from, $lt: to },
+        mode:     'Cash',
+        received: { $gt: 0 },
+      },
+    },
+    {
+      $group: {
+        _id:         '$receivedBy',
+        userId:      { $first: '$receivedById' },
+        totalCash:   { $sum: '$received' },
+        count:       { $sum: 1 },
+        lastDate:    { $max: '$date' },
+      },
+    },
+    { $sort: { totalCash: -1 } },
+  ]);
+
+  // Cash expenses paid out per person (reduces their holding)
+  const remitted = await Expense.aggregate([
+    {
+      $match: {
+        paidBy: { $ne: '' },
+      },
+    },
+    {
+      $group: {
+        _id:          '$paidBy',
+        totalRemitted: { $sum: '$amount' },
+      },
+    },
+  ]);
+
+  // Total donations per person (all modes, for display count)
+  const allCounts = await Donation.aggregate([
+    {
+      $match: {
+        receivedBy: { $ne: '' },
+      },
+    },
+    { $group: { _id: '$receivedBy', total: { $sum: 1 } } },
+  ]);
+  const countMap  = Object.fromEntries(allCounts.map(r => [r._id, r.total]));
+  const remitMap  = Object.fromEntries(remitted.map(r => [r._id, r.totalRemitted]));
+
+  const holders = collected.map(r => {
+    const name          = r._id || 'Unknown';
+    const totalCollected = r.totalCash;
+    const totalRemitted  = remitMap[name] || 0;
+    const cashInHand     = totalCollected - totalRemitted;
+    return {
+      name,
+      userId:          r.userId || null,
+      totalCollected,
+      totalRemitted,
+      cashInHand,
+      cashCount:       r.count,
+      donationCount:   countMap[name] || r.count,
+      lastCollection:  r.lastDate,
+    };
+  });
+
+  const grandTotal = holders.reduce((s, h) => s + h.cashInHand, 0);
+
+  return ok({ year, holders, grandTotal });
+}
+
+// ── Users ─────────────────────────────────────────────────
+
+async function getUsers() {
+  const users = await User.find().sort({ name: 1 }).lean();
+  return ok({ data: users });
+}
+
+async function addUser(p) {
+  if (!p.name || !p.name.trim()) return err('name required');
+  const validRoles = ['admin', 'trustee', 'viewer'];
+  const role = validRoles.includes(p.role) ? p.role : 'trustee';
+  const pin = /^\d{4}$/.test(p.pin || '') ? p.pin : '1234';
+  const user = await User.create({
+    name:      p.name.trim(),
+    email:     p.email     || '',
+    phone:     p.phone     || '',
+    role,
+    isActive:  p.isActive !== 'false',
+    pin,
+    createdBy: p.createdBy || '',
+  });
+  return ok({ data: user });
+}
+
+async function verifyPin(p) {
+  if (!p.name) return err('name required');
+  if (!p.pin)  return err('pin required');
+  const user = await User.findOne({ name: p.name, isActive: true }).lean();
+  if (!user)   return err('User not found');
+  if (user.pin !== p.pin) return err('Wrong PIN');
+  // Return user without pin field
+  const { pin: _pin, ...safeUser } = user;
+  return ok({ data: safeUser });
+}
+
+async function setPin(p) {
+  if (!p.name)    return err('name required');
+  if (!p.pin || !/^\d{4}$/.test(p.pin)) return err('PIN must be 4 digits');
+  await User.updateOne({ name: p.name }, { $set: { pin: p.pin } });
+  return ok({ message: 'PIN updated' });
 }
 
 module.exports = router;
