@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: spt-api
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: API_TOKEN
+        sync: false
+      - key: NODE_ENV
+        value: production
