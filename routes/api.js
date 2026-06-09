@@ -1091,10 +1091,22 @@ async function getCashHolders(p) {
   }).sort({ date: 1 }).lean();
 
   // 3. Fetch individual Other Income transactions
-  const otherIncomeRows = await Transaction.find({
-    date: { $gte: from, $lt: to },
-    type: 'credit',
-  }).sort({ date: 1 }).lean();
+  const otherIncome = await Transaction.aggregate([
+      {
+          $match: {
+              date: { $gte: from, $lt: to },
+              type: 'credit',
+              receivedBy: { $nin: [null, ''] },
+          },
+          $group: {
+              _id: '$receivedBy',
+              userId: { $first: '$receivedById' },
+              total: { $sum: '$amount' },
+              count: { $sum: 1 },
+              lastDate: { $max: '$date' },
+          }
+      },
+  ]);
 
   // Calculate other income total dynamically from the rows
   const otherIncomeTotal = otherIncomeRows.reduce((sum, t) => sum + (t.amount || 0), 0);
