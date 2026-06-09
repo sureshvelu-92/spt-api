@@ -1287,6 +1287,7 @@ async function getPoojaSchedule(p) {
       donationId:     match?._id?.toString() || null,
       variant:        match?.poojaVariant || null,
       approvalStatus: match?.approvalStatus || null,
+      hasVendorTxn:   false,  // enriched later
     };
   });
 
