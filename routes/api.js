@@ -82,7 +82,8 @@ router.get('/', auth, async (req, res) => {
       // ── One-time repair: fix VendorTransaction dates to use poojaDate ──
       case 'fixVendorTxnDates': return res.json(await fixVendorTxnDates());
 
-      case 'setPoojaDate': return res.json(await setPoojaDate(p));
+      case 'setPoojaDate':       return res.json(await setPoojaDate(p));
+      case 'backfillPoojaDates': return res.json(await backfillPoojaDates());
 
       default:
         return res.json(err('Unknown action'));
@@ -1563,6 +1564,60 @@ async function setPin(p) {
   if (!p.pin || !/^\d{4}$/.test(p.pin)) return err('PIN must be 4 digits');
   await User.updateOne({ name: p.name }, { $set: { pin: p.pin } });
   return ok({ message: 'PIN updated' });
+}
+
+/**
+ * backfillPoojaDates — migration script
+ *
+ * For every pooja/anniversary donation that has poojaDate = null,
+ * set poojaDate = date (the donation entry date, i.e. the date the pooja was done).
+ * Also syncs the date on any linked VendorTransactions (refId = receiptNo).
+ *
+ * Safe to run multiple times (idempotent — only touches null records).
+ *
+ * Call: GET /?action=backfillPoojaDates&token=SPTT@1985
+ */
+async function backfillPoojaDates() {
+  const POOJA_TYPES = [
+    'Weekly Pooja', 'Amavasai Pooja', 'Pournami Pooja',
+    'Birthday Pooja', 'Anniversary Pooja',
+  ];
+
+  // Find all pooja donations with no poojaDate set
+  const donations = await Donation.find({
+    donType:   { $in: POOJA_TYPES },
+    poojaDate: { $in: [null, ''] },
+  }).lean();
+
+  if (!donations.length) {
+    return ok({ updated: 0, message: 'No donations to backfill' });
+  }
+
+  let donUpdated = 0;
+  let txnUpdated = 0;
+
+  for (const don of donations) {
+    const poojaDate = don.date;   // use the existing donation date
+    if (!poojaDate) continue;
+
+    // Update donation
+    await Donation.updateOne({ _id: don._id }, { $set: { poojaDate } });
+    donUpdated++;
+
+    // Update linked VendorTransactions (if any)
+    const result = await VendorTransaction.updateMany(
+      { refId: don.receiptNo, refType: 'pooja' },
+      { $set: { date: poojaDate } }
+    );
+    txnUpdated += result.modifiedCount;
+  }
+
+  return ok({
+    donationsChecked: donations.length,
+    donationsUpdated: donUpdated,
+    vendorTxnsUpdated: txnUpdated,
+    message: `Backfilled ${donUpdated} donation(s), updated ${txnUpdated} vendor transaction(s)`,
+  });
 }
 
 /**
