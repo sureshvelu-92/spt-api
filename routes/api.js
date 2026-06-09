@@ -82,6 +82,8 @@ router.get('/', auth, async (req, res) => {
       // ── One-time repair: fix VendorTransaction dates to use poojaDate ──
       case 'fixVendorTxnDates': return res.json(await fixVendorTxnDates());
 
+      case 'setPoojaDate': return res.json(await setPoojaDate(p));
+
       default:
         return res.json(err('Unknown action'));
     }
@@ -1561,6 +1563,26 @@ async function setPin(p) {
   if (!p.pin || !/^\d{4}$/.test(p.pin)) return err('PIN must be 4 digits');
   await User.updateOne({ name: p.name }, { $set: { pin: p.pin } });
   return ok({ message: 'PIN updated' });
+}
+
+/**
+ * setPoojaDate — update poojaDate on a donation (by id or receiptNo)
+ * Also updates any linked VendorTransactions to use the new poojaDate
+ */
+async function setPoojaDate(p) {
+  if (!p.poojaDate)        return err('poojaDate required (YYYY-MM-DD)');
+  if (!p.id && !p.receiptNo) return err('id or receiptNo required');
+  const query    = p.id ? { _id: p.id } : { receiptNo: p.receiptNo };
+  const don      = await Donation.findOne(query).lean();
+  if (!don)                return err('Donation not found');
+  const newDate  = new Date(p.poojaDate + 'T00:00:00Z');
+  await Donation.updateOne(query, { $set: { poojaDate: newDate } });
+  // Also update VendorTransaction dates
+  const updated = await VendorTransaction.updateMany(
+    { refId: don.receiptNo, refType: 'pooja' },
+    { $set: { date: newDate } }
+  );
+  return ok({ receiptNo: don.receiptNo, poojaDate: p.poojaDate, vendorTxnsUpdated: updated.modifiedCount });
 }
 
 /**
