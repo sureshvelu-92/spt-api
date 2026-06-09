@@ -1062,7 +1062,7 @@ async function getCashHolders(p) {
   const from = new Date(Date.UTC(year,     0, 1));
   const to   = new Date(Date.UTC(year + 1, 0, 1));
 
-  // All donations collected per person — irrespective of mode
+  // 1. All donations collected per person — irrespective of mode
   const collected = await Donation.aggregate([
     {
       $match: {
@@ -1083,19 +1083,23 @@ async function getCashHolders(p) {
     { $sort: { total: -1 } },
   ]);
 
-  // Other income transactions (interest, asset sale, misc)
-  const otherIncome = await Transaction.aggregate([
-    {
-      $match: {
-        date:     { $gte: from, $lt: to },
-        type:     'credit',
-      },
-    },
-    { $group: { _id: null, total: { $sum: '$amount' } } },
-  ]);
-  const otherIncomeTotal = otherIncome[0]?.total || 0;
+  // 2. Individual donation rows per person
+  const donationRows = await Donation.find({
+    date:       { $gte: from, $lt: to },
+    received:   { $gt: 0 },
+    receivedBy: { $nin: [null, ''] },
+  }).sort({ date: 1 }).lean();
 
-  // Expenses paid out per person
+  // 3. Fetch individual Other Income transactions
+  const otherIncomeRows = await Transaction.find({
+    date: { $gte: from, $lt: to },
+    type: 'credit',
+  }).sort({ date: 1 }).lean();
+
+  // Calculate other income total dynamically from the rows
+  const otherIncomeTotal = otherIncomeRows.reduce((sum, t) => sum + (t.amount || 0), 0);
+
+  // 4. Expenses paid out per person
   const remitted = await Expense.aggregate([
     {
       $match: {
@@ -1110,13 +1114,6 @@ async function getCashHolders(p) {
       },
     },
   ]);
-
-  // Individual donation rows per person
-  const donationRows = await Donation.find({
-    date:       { $gte: from, $lt: to },
-    received:   { $gt: 0 },
-    receivedBy: { $nin: [null, ''] },
-  }).sort({ date: 1 }).lean();
 
   // Individual expense rows per person
   const expenseRows = await Expense.find({
@@ -1138,6 +1135,17 @@ async function getCashHolders(p) {
     });
   }
 
+  // --- INJECT OTHER INCOME INTO THE LIST MAP ---
+  if (otherIncomeRows.length > 0) {
+    donByPerson["Other Income (Misc/Interest)"] = otherIncomeRows.map(t => ({
+      date:      fmtDate(t.date),
+      donor:     t.description || 'System / Miscellaneous', // Map description to donor for unified display
+      amount:    t.amount,
+      mode:      t.mode || 'N/A',
+      receiptNo: t.referenceNo || t._id.toString(), // fallback identifier
+    }));
+  }
+
   const expByPerson = {};
   for (const e of expenseRows) {
     const n = e.paidBy;
@@ -1154,6 +1162,7 @@ async function getCashHolders(p) {
 
   const remitMap = Object.fromEntries(remitted.map(r => [r._id, r.totalRemitted]));
 
+  // Build standard holders list
   const holders = collected.map(r => {
     const name           = r._id || 'Unknown';
     const totalCollected = r.total;
@@ -1172,7 +1181,22 @@ async function getCashHolders(p) {
     };
   });
 
-  const grandTotal = holders.reduce((s, h) => s + h.cashInHand, 0) + otherIncomeTotal;
+  // --- APPEND "OTHER INCOME" AS A VIRTUAL HOLDER ---
+  if (otherIncomeTotal > 0) {
+    holders.push({
+      name:           "Other Income (Misc/Interest)",
+      userId:         null,
+      totalCollected: otherIncomeTotal,
+      totalRemitted:  0,
+      cashInHand:     otherIncomeTotal,
+      count:          otherIncomeRows.length,
+      lastCollection: otherIncomeRows[otherIncomeRows.length - 1]?.date || null,
+      incomeList:     donByPerson["Other Income (Misc/Interest)"] || [],
+      expenseList:    [],
+    });
+  }
+
+  const grandTotal = holders.reduce((s, h) => s + h.cashInHand, 0);
 
   return ok({ year, holders, grandTotal, otherIncomeTotal });
 }
