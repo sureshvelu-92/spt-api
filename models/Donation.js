@@ -22,7 +22,12 @@ const donationSchema = new mongoose.Schema({
   poojaType:    { type: String, default: '' },   // e.g. "Weekly Pooja"
   poojaVariant: { type: String, default: '' },   // "Regular" | "Special"
   poojaDate:      { type: Date,    default: null },   // date pooja will be performed
-  isTempleFunded: { type: Boolean, default: false }, // true = no donor, funded by temple
+  isTempleFunded:  { type: Boolean, default: false }, // true = no donor, funded by temple
+  approvalStatus:  { type: String, default: 'approved',
+                     enum: ['pending', 'approved', 'rejected'] },
+  approvedBy:      { type: String, default: '' },
+  approvedAt:      { type: Date,   default: null },
+  rejectedReason:  { type: String, default: '' },
   year:         { type: Number, default: () => new Date().getFullYear(), index: true },
 }, { timestamps: true });
 
