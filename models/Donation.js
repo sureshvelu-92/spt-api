@@ -21,6 +21,8 @@ const donationSchema = new mongoose.Schema({
   // Pooja-specific fields
   poojaType:    { type: String, default: '' },   // e.g. "Weekly Pooja"
   poojaVariant: { type: String, default: '' },   // "Regular" | "Special"
+  poojaDate:      { type: Date,    default: null },   // date pooja will be performed
+  isTempleFunded: { type: Boolean, default: false }, // true = no donor, funded by temple
   year:         { type: Number, default: () => new Date().getFullYear(), index: true },
 }, { timestamps: true });
 

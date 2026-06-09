@@ -69,6 +69,9 @@ router.get('/', auth, async (req, res) => {
       case 'getCombinedLedger':     return res.json(await getCombinedLedger(p));
       case 'getCashHolders':        return res.json(await getCashHolders(p));
 
+      case 'getPoojaSchedule':  return res.json(await getPoojaSchedule(p));
+      case 'autoFillSchedule':  return res.json(await autoFillSchedule(p));
+
       case 'getUsers':          return res.json(await getUsers());
       case 'addUser':           return res.json(await addUser(p));
       case 'verifyPin':         return res.json(await verifyPin(p));
@@ -121,6 +124,7 @@ async function addDonation(p) {
     personName: p.personName || '',
     poojaType:    p.poojaType    || '',
     poojaVariant: p.poojaVariant || '',
+    poojaDate:    p.poojaDate ? new Date(p.poojaDate) : null,
   };
 
   // Upsert on receiptNo — safe to re-submit same receipt without duplicating
@@ -621,6 +625,9 @@ function mapDonation(d) {
     'Payment Status':  d.status,
     'Type':         d.donType,
     'Person Name':  d.personName,
+    poojaType:      d.poojaType   || '',
+    poojaVariant:   d.poojaVariant || '',
+    poojaDate:      d.poojaDate ? fmtDate(d.poojaDate) : '',
     isPending:      d.isPending,
     _id:            d._id,
   };
@@ -1160,6 +1167,211 @@ async function getCashHolders(p) {
 
   return ok({ year, holders, grandTotal, otherIncomeTotal });
 }
+// ── Pooja Schedule ────────────────────────────────────────
+
+/**
+ * Lunar phase calculation (IST-aware)
+ * Reference new moon: 2025-01-29 12:36 UTC
+ * Synodic month: 29.530588853 days
+ */
+const SYNODIC_MS      = 29.530588853 * 24 * 60 * 60 * 1000;
+const REF_NEW_MOON_MS = new Date('2025-01-29T12:36:00Z').getTime();
+const IST_OFFSET_MS   = 5.5 * 60 * 60 * 1000;
+
+function lunarPhases(year, month) {
+  const from = new Date(Date.UTC(year, month - 1, 1)).getTime();
+  const to   = new Date(Date.UTC(year, month,     1)).getTime();
+  const amavasai = [], pournami = [];
+  const startCycle = Math.floor((from - REF_NEW_MOON_MS) / SYNODIC_MS);
+
+  for (let i = startCycle - 1; i <= startCycle + 3; i++) {
+    // New moon (Amavasai)
+    const nmIst = new Date(REF_NEW_MOON_MS + i * SYNODIC_MS + IST_OFFSET_MS);
+    const nmDay = new Date(Date.UTC(nmIst.getUTCFullYear(), nmIst.getUTCMonth(), nmIst.getUTCDate()));
+    if (nmDay.getTime() >= from && nmDay.getTime() < to) amavasai.push(nmDay);
+
+    // Full moon (Pournami)
+    const fmIst = new Date(REF_NEW_MOON_MS + (i + 0.5) * SYNODIC_MS + IST_OFFSET_MS);
+    const fmDay = new Date(Date.UTC(fmIst.getUTCFullYear(), fmIst.getUTCMonth(), fmIst.getUTCDate()));
+    if (fmDay.getTime() >= from && fmDay.getTime() < to) pournami.push(fmDay);
+  }
+  return { amavasai, pournami };
+}
+
+function weeklyPoojaDays(year, month) {
+  // Tuesday=2, Friday=5, Sunday=0
+  const TARGETS = new Set([0, 2, 5]);
+  const days = [];
+  const end  = new Date(Date.UTC(year, month, 1));
+  for (let d = new Date(Date.UTC(year, month - 1, 1)); d < end; d.setUTCDate(d.getUTCDate() + 1)) {
+    if (TARGETS.has(d.getUTCDay())) days.push(new Date(d));
+  }
+  return days;
+}
+
+const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function isoDate(d) { return d.toISOString().split('T')[0]; }
+
+async function getPoojaSchedule(p) {
+  const year  = parseInt(p.year  || new Date().getFullYear());
+  const month = parseInt(p.month || (new Date().getMonth() + 1));
+
+  const { amavasai, pournami } = lunarPhases(year, month);
+  const weekly = weeklyPoojaDays(year, month);
+
+  // Build expected schedule
+  const entries = [];
+  for (const d of weekly) {
+    entries.push({ date: d, poojaType: 'Weekly Pooja', dayLabel: DAY_NAMES[d.getUTCDay()] });
+  }
+  for (const d of amavasai) {
+    entries.push({ date: d, poojaType: 'Amavasai Pooja', dayLabel: 'Amavasai' });
+  }
+  for (const d of pournami) {
+    entries.push({ date: d, poojaType: 'Pournami Pooja', dayLabel: 'Pournami' });
+  }
+  entries.sort((a, b) => a.date - b.date);
+
+  // Query all pooja donations for the month
+  const from = new Date(Date.UTC(year, month - 1, 1));
+  const to   = new Date(Date.UTC(year, month,     1));
+  const POOJA_TYPES = ['Weekly Pooja', 'Amavasai Pooja', 'Pournami Pooja',
+                       'Birthday Pooja', 'Anniversary Pooja'];
+
+  const donations = await Donation.find({
+    donType: { $in: POOJA_TYPES },
+    $or: [
+      { poojaDate: { $gte: from, $lt: to } },
+      { date:      { $gte: from, $lt: to }, poojaDate: { $in: [null, ''] } },
+    ],
+  }).lean();
+
+  // Match donations to schedule slots
+  const schedule = entries.map(entry => {
+    const entryIso = isoDate(entry.date);
+    const match = donations.find(d => {
+      const effDate = d.poojaDate ? isoDate(new Date(d.poojaDate)) : isoDate(new Date(d.date));
+      return effDate === entryIso && d.donType === entry.poojaType;
+    });
+
+    return {
+      date:        entryIso,
+      dayLabel:    entry.dayLabel,
+      poojaType:   entry.poojaType,
+      status:      match
+                     ? (match.isTempleFunded ? 'temple_funded' : 'donor_funded')
+                     : 'unfunded',
+      donorName:   match?.donor     || null,
+      receiptNo:   match?.receiptNo || null,
+      donationId:  match?._id       || null,
+      variant:     match?.poojaVariant || null,
+    };
+  });
+
+  const counts = {
+    total:        schedule.length,
+    donorFunded:  schedule.filter(s => s.status === 'donor_funded').length,
+    templeFunded: schedule.filter(s => s.status === 'temple_funded').length,
+    unfunded:     schedule.filter(s => s.status === 'unfunded').length,
+  };
+
+  return ok({ year, month, schedule, counts });
+}
+
+async function autoFillSchedule(p) {
+  const year    = parseInt(p.year  || new Date().getFullYear());
+  const month   = parseInt(p.month || (new Date().getMonth() + 1));
+  const variant = (p.variant === 'Special') ? 'Special' : 'Regular';
+
+  const sched = await getPoojaSchedule({ year: String(year), month: String(month) });
+  const unfunded = sched.schedule.filter(s => s.status === 'unfunded');
+
+  if (unfunded.length === 0) return ok({ created: 0, message: 'All poojas already covered' });
+
+  const cfg = await AppConfig.get();
+  const variantKey = variant === 'Special' ? 'special' : 'regular';
+  const breakdown  = cfg.poojaBreakdown?.[variantKey] || [];
+  const totalCost  = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
+
+  const created = [];
+  for (const entry of unfunded) {
+    const poojaDateObj = new Date(entry.date + 'T00:00:00Z');
+    const seq      = await AppConfig.nextSeq('donation');
+    const receiptNo = `${RCP_YEAR}/TF/${seq}`;   // TF = Temple Funded
+
+    const donDoc = {
+      receiptNo,
+      date:           poojaDateObj,
+      poojaDate:      poojaDateObj,
+      donor:          'Temple Fund',
+      phone:          '',
+      amount:         totalCost,
+      received:       totalCost,
+      balance:        0,
+      mode:           'Temple Fund',
+      status:         'Received',
+      isPending:      false,
+      donType:        entry.poojaType,
+      poojaType:      entry.poojaType,
+      poojaVariant:   variant,
+      isTempleFunded: true,
+      notes:          `${entry.dayLabel} — Auto-created (${variant})`,
+      receivedBy:     p.recordedBy || 'Auto',
+      year,
+    };
+
+    await Donation.findOneAndUpdate(
+      { receiptNo },
+      { $set: donDoc },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    // Create vendor transactions from breakdown
+    if (breakdown.length) {
+      const description = `${entry.poojaType} (${variant}) — ${receiptNo} | ${entry.dayLabel}`;
+      const txns = breakdown.map(line => ({
+        vendorName:  line.vendorName,
+        vendorId:    line.vendorId || null,
+        date:        poojaDateObj,
+        description,
+        item:        line.item || '',
+        credit:      line.amount || 0,
+        debit:       0,
+        refType:     'pooja',
+        refId:       receiptNo,
+        poojaName:   entry.poojaType,
+        variant,
+        isSettled:   false,
+      }));
+      await VendorTransaction.insertMany(txns);
+    }
+
+    // General ledger expense debit
+    try {
+      const txnSeq = await AppConfig.nextSeq('txn');
+      await Transaction.create({
+        txnNo:       `${RCP_YEAR}/TXN/${txnSeq}`,
+        date:        poojaDateObj,
+        type:        'debit',
+        category:    'Expense',
+        amount:      totalCost,
+        description: `${entry.poojaType} (${variant}) — Temple Funded | ${entry.dayLabel}`,
+        party:       'Temple Fund',
+        mode:        'Cash',
+        refType:     'manual',
+        refId:       receiptNo,
+        recordedBy:  p.recordedBy || 'Auto',
+        year,
+      });
+    } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
+
+    created.push({ date: entry.date, poojaType: entry.poojaType, receiptNo });
+  }
+
+  return ok({ created: created.length, details: created });
+}
+
 // ── Users ─────────────────────────────────────────────────
 
 async function getUsers() {
