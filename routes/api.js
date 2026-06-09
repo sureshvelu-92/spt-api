@@ -1327,27 +1327,45 @@ async function autoFillSchedule(p) {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
-    // Create vendor transactions from breakdown
+    // ── 1. Expense record (same as addPooja) ─────────────────
+    const expSeq    = await AppConfig.nextSeq('expense');
+    const voucherNo = `${RCP_YEAR}/EXP/${expSeq}`;
+    const label     = `${entry.poojaType} (${variant}) — Temple Fund | ${entry.dayLabel}`;
+
+    await Expense.create({
+      voucherNo,
+      date:        poojaDateObj,
+      vendor:      'Temple Fund',
+      description: label,
+      category:    'Puja & Rituals',
+      expType:     'Temple Operations',
+      amount:      totalCost,
+      mode:        'Cash',
+      paidBy:      p.recordedBy || 'Auto',
+      remarks:     `Auto-created for ${entry.dayLabel}`,
+      year,
+    });
+
+    // ── 2. VendorTransaction credits — refId = voucherNo ─────
     if (breakdown.length) {
-      const description = `${entry.poojaType} (${variant}) — ${receiptNo} | ${entry.dayLabel}`;
-      const txns = breakdown.map(line => ({
+      const vtxns = breakdown.map(line => ({
         vendorName:  line.vendorName,
         vendorId:    line.vendorId || null,
         date:        poojaDateObj,
-        description,
+        description: label,
         item:        line.item || '',
         credit:      line.amount || 0,
         debit:       0,
         refType:     'pooja',
-        refId:       receiptNo,
+        refId:       voucherNo,      // expense voucher, consistent with addPooja
         poojaName:   entry.poojaType,
         variant,
         isSettled:   false,
       }));
-      await VendorTransaction.insertMany(txns);
+      await VendorTransaction.insertMany(vtxns);
     }
 
-    // General ledger expense debit
+    // ── 3. General ledger debit ───────────────────────────────
     try {
       const txnSeq = await AppConfig.nextSeq('txn');
       await Transaction.create({
@@ -1356,17 +1374,17 @@ async function autoFillSchedule(p) {
         type:        'debit',
         category:    'Expense',
         amount:      totalCost,
-        description: `${entry.poojaType} (${variant}) — Temple Funded | ${entry.dayLabel}`,
+        description: label,
         party:       'Temple Fund',
         mode:        'Cash',
-        refType:     'manual',
-        refId:       receiptNo,
+        refType:     'expense',
+        refId:       voucherNo,
         recordedBy:  p.recordedBy || 'Auto',
         year,
       });
     } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
 
-    created.push({ date: entry.date, poojaType: entry.poojaType, receiptNo });
+    created.push({ date: entry.date, poojaType: entry.poojaType, receiptNo, voucherNo });
   }
 
   return ok({ created: created.length, details: created });
