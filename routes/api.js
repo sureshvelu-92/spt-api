@@ -1033,91 +1033,133 @@ async function getCombinedLedger(p) {
 }
 
 /**
- * getCashHolders — shows how much cash each person is currently holding
+ * getCashHolders — shows how much each person has collected (ALL modes)
  *
  * Logic:
- *   Cash collected = sum of Donation.received WHERE mode='Cash' grouped by receivedBy
- *   Cash remitted  = sum of Expense.amount WHERE paidBy = person AND expType indicates remittance
- *                    (for now: all cash expenses paid by that person count as remitted/spent)
- *
- * Returns per-person: name, userId, totalCollected, totalRemitted, cashInHand
+ *   Collected = sum of Donation.received (all modes) grouped by receivedBy
+ *             + other income Transactions added to grand total
+ *   Remitted  = sum of Expense.amount WHERE paidBy = person
  */
 async function getCashHolders(p) {
   const year = parseInt(p.year || new Date().getFullYear());
-  // Use UTC midnight to match how dates are stored (via Date.UTC in migration)
   const from = new Date(Date.UTC(year,     0, 1));
   const to   = new Date(Date.UTC(year + 1, 0, 1));
 
-  // Cash donations collected per person
+  // All donations collected per person — irrespective of mode
   const collected = await Donation.aggregate([
     {
       $match: {
-        date:     { $gte: from, $lt: to },
-        mode:     'Cash',
-        received: { $gt: 0 },
+        date:       { $gte: from, $lt: to },
+        received:   { $gt: 0 },
+        receivedBy: { $nin: [null, ''] },
       },
     },
     {
       $group: {
-        _id:         '$receivedBy',
-        userId:      { $first: '$receivedById' },
-        totalCash:   { $sum: '$received' },
-        count:       { $sum: 1 },
-        lastDate:    { $max: '$date' },
+        _id:      '$receivedBy',
+        userId:   { $first: '$receivedById' },
+        total:    { $sum: '$received' },
+        count:    { $sum: 1 },
+        lastDate: { $max: '$date' },
       },
     },
-    { $sort: { totalCash: -1 } },
+    { $sort: { total: -1 } },
   ]);
 
-  // Cash expenses paid out per person (reduces their holding)
+  // Other income transactions (interest, asset sale, misc)
+  const otherIncome = await Transaction.aggregate([
+    {
+      $match: {
+        date:     { $gte: from, $lt: to },
+        type:     'credit',
+        category: { $nin: ['Donation', 'Pooja Income'] },
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const otherIncomeTotal = otherIncome[0]?.total || 0;
+
+  // Expenses paid out per person
   const remitted = await Expense.aggregate([
     {
       $match: {
-        paidBy: { $ne: '' },
+        date:   { $gte: from, $lt: to },
+        paidBy: { $nin: [null, ''] },
       },
     },
     {
       $group: {
-        _id:          '$paidBy',
+        _id:           '$paidBy',
         totalRemitted: { $sum: '$amount' },
       },
     },
   ]);
 
-  // Total donations per person (all modes, for display count)
-  const allCounts = await Donation.aggregate([
-    {
-      $match: {
-        receivedBy: { $ne: '' },
-      },
-    },
-    { $group: { _id: '$receivedBy', total: { $sum: 1 } } },
-  ]);
-  const countMap  = Object.fromEntries(allCounts.map(r => [r._id, r.total]));
-  const remitMap  = Object.fromEntries(remitted.map(r => [r._id, r.totalRemitted]));
+  // Individual donation rows per person
+  const donationRows = await Donation.find({
+    date:       { $gte: from, $lt: to },
+    received:   { $gt: 0 },
+    receivedBy: { $nin: [null, ''] },
+  }).sort({ date: 1 }).lean();
+
+  // Individual expense rows per person
+  const expenseRows = await Expense.find({
+    date:   { $gte: from, $lt: to },
+    paidBy: { $nin: [null, ''] },
+  }).sort({ date: 1 }).lean();
+
+  // Group rows by person name
+  const donByPerson  = {};
+  for (const d of donationRows) {
+    const n = d.receivedBy;
+    if (!donByPerson[n]) donByPerson[n] = [];
+    donByPerson[n].push({
+      date:      fmtDate(d.date),
+      donor:     d.donor,
+      amount:    d.received,
+      mode:      d.mode,
+      receiptNo: d.receiptNo,
+    });
+  }
+
+  const expByPerson = {};
+  for (const e of expenseRows) {
+    const n = e.paidBy;
+    if (!expByPerson[n]) expByPerson[n] = [];
+    expByPerson[n].push({
+      date:        fmtDate(e.date),
+      vendor:      e.vendor,
+      description: e.description,
+      amount:      e.amount,
+      mode:        e.mode,
+      voucherNo:   e.voucherNo,
+    });
+  }
+
+  const remitMap = Object.fromEntries(remitted.map(r => [r._id, r.totalRemitted]));
 
   const holders = collected.map(r => {
-    const name          = r._id || 'Unknown';
-    const totalCollected = r.totalCash;
+    const name           = r._id || 'Unknown';
+    const totalCollected = r.total;
     const totalRemitted  = remitMap[name] || 0;
     const cashInHand     = totalCollected - totalRemitted;
     return {
       name,
-      userId:          r.userId || null,
+      userId:         r.userId || null,
       totalCollected,
       totalRemitted,
       cashInHand,
-      cashCount:       r.count,
-      donationCount:   countMap[name] || r.count,
-      lastCollection:  r.lastDate,
+      count:          r.count,
+      lastCollection: r.lastDate,
+      incomeList:     donByPerson[name]  || [],
+      expenseList:    expByPerson[name]  || [],
     };
   });
 
-  const grandTotal = holders.reduce((s, h) => s + h.cashInHand, 0);
+  const grandTotal = holders.reduce((s, h) => s + h.cashInHand, 0) + otherIncomeTotal;
 
-  return ok({ year, holders, grandTotal });
+  return ok({ year, holders, grandTotal, otherIncomeTotal });
 }
-
 // ── Users ─────────────────────────────────────────────────
 
 async function getUsers() {
