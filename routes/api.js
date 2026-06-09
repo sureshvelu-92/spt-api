@@ -1089,7 +1089,6 @@ async function getCashHolders(p) {
       $match: {
         date:     { $gte: from, $lt: to },
         type:     'credit',
-        category: { $nin: ['Donation', 'Pooja Income'] },
       },
     },
     { $group: { _id: null, total: { $sum: '$amount' } } },
