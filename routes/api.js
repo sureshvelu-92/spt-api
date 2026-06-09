@@ -1314,11 +1314,24 @@ async function getPoojaSchedule(p) {
       donationId:     d._id.toString(),
       variant:        d.poojaVariant || null,
       approvalStatus: d.approvalStatus || null,
+      hasVendorTxn:   false,  // will be enriched below
     });
   }
 
   // Sort the full schedule by date
   schedule.sort((a, b) => a.date.localeCompare(b.date));
+
+  // Enrich with vendor transaction presence
+  const refIds = schedule
+    .filter(s => s.receiptNo)
+    .map(s => s.receiptNo);
+  const vtxnRefs = refIds.length
+    ? await VendorTransaction.distinct('refId', { refId: { $in: refIds }, refType: 'pooja' })
+    : [];
+  const vtxnSet = new Set(vtxnRefs);
+  schedule.forEach(s => {
+    if (s.receiptNo) s.hasVendorTxn = vtxnSet.has(s.receiptNo);
+  });
 
   const counts = {
     total:           schedule.length,
