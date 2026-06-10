@@ -52,6 +52,7 @@ router.get('/', auth, async (req, res) => {
       case 'getAllData':       return res.json(await getAllData());
       case 'getMonthlyReport': return res.json(await getMonthlyReport(p));
       case 'getYearlyReport':  return res.json(await getYearlyReport(p));
+      case 'getOverallReport': return res.json(await getOverallReport());
 
       case 'getConfig':        return res.json(await getConfig());
       case 'updateConfig':     return res.json(await updateConfig(p));
@@ -679,6 +680,84 @@ async function getYearlyReport(p) {
     donByType:   donByType.map(r => ({ type: r._id || 'Others', total: r.total, count: r.count })),
     expByCategory: expByCat.map(r => ({ category: r._id || 'Miscellaneous', total: r.total, count: r.count })),
     topVendors:  expByVendor.map(r => ({ vendor: r._id || 'Unknown', total: r.total, count: r.count })),
+  });
+}
+
+// ── Overall (all-time) Report ─────────────────────────────
+// ?action=getOverallReport
+async function getOverallReport() {
+  const [donAgg, expAgg, donByType, expByCat, topVendors, byYear, otherInc, pendingDon] = await Promise.all([
+    // All-time donation totals
+    Donation.aggregate([
+      { $group: {
+          _id:           null,
+          totalPledged:  { $sum: '$amount' },
+          totalReceived: { $sum: '$received' },
+          totalBalance:  { $sum: '$balance' },
+          count:         { $sum: 1 },
+      }},
+    ]),
+    // All-time expense totals
+    Expense.aggregate([
+      { $group: { _id: null, totalSpent: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+    // By donation type
+    Donation.aggregate([
+      { $group: { _id: '$donType', total: { $sum: '$received' }, count: { $sum: 1 } } },
+      { $sort: { total: -1 } },
+    ]),
+    // By expense category
+    Expense.aggregate([
+      { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      { $sort: { total: -1 } },
+    ]),
+    // Top vendors all-time
+    Expense.aggregate([
+      { $group: { _id: '$vendor', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      { $sort: { total: -1 } },
+      { $limit: 10 },
+    ]),
+    // Year-by-year summary
+    Donation.aggregate([
+      { $group: { _id: '$year', received: { $sum: '$received' }, count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]),
+    // All-time other income
+    Transaction.aggregate([
+      { $match: { type: 'credit', refType: { $in: ['manual'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    // Pending donations count + amount
+    Donation.aggregate([
+      { $match: { status: { $in: ['Pending', 'Partially Received'] } } },
+      { $group: { _id: null, totalPending: { $sum: '$balance' }, count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const d          = donAgg[0]  || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0 };
+  const e          = expAgg[0]  || { totalSpent: 0, count: 0 };
+  const otherTotal = otherInc[0]?.total ?? 0;
+  const pending    = pendingDon[0] || { totalPending: 0, count: 0 };
+  const totalIncome = d.totalReceived + otherTotal;
+
+  return ok({
+    summary: {
+      totalPledged:    d.totalPledged,
+      totalReceived:   d.totalReceived,
+      totalOtherIncome: otherTotal,
+      totalIncome,
+      totalBalance:    d.totalBalance,
+      totalSpent:      e.totalSpent,
+      netBalance:      totalIncome - e.totalSpent,
+      donCount:        d.count,
+      expCount:        e.count,
+      pendingAmount:   pending.totalPending,
+      pendingCount:    pending.count,
+    },
+    byYear: byYear.map(r => ({ year: r._id, received: r.received, count: r.count })),
+    donByType:    donByType.map(r => ({ type: r._id || 'Others', total: r.total, count: r.count })),
+    expByCategory: expByCat.map(r => ({ category: r._id || 'Misc', total: r.total, count: r.count })),
+    topVendors:   topVendors.map(r => ({ vendor: r._id || 'Unknown', total: r.total, count: r.count })),
   });
 }
 
