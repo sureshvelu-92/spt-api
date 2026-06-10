@@ -85,6 +85,11 @@ router.get('/', auth, async (req, res) => {
       case 'verifyPin':         return res.json(await verifyPin(p));
       case 'setPin':            return res.json(await setPin(p));
 
+      case 'webauthnRegisterOptions': return res.json(await webauthnRegisterOptions(p));
+      case 'webauthnRegisterVerify':  return res.json(await webauthnRegisterVerify(p));
+      case 'webauthnAuthOptions':     return res.json(await webauthnAuthOptions(p));
+      case 'webauthnAuthVerify':      return res.json(await webauthnAuthVerify(p));
+
       case 'getBudget':         return res.json(await getBudget(p));
       case 'saveBudget':        return res.json(await saveBudget(p));
       case 'addBudgetItem':     return res.json(await addBudgetItem(p));
@@ -1693,69 +1698,24 @@ async function approvePooja(p) {
   if (slot.status === 'temple_funded')     return err('Already approved');
   if (slot.approvalStatus !== 'pending')   return err('Not in pending state');
 
-  const poojaDateObj = new Date(slot.poojaDate);
-  const variant      = slot.poojaVariant || 'Regular';
-  const variantKey   = variant === 'Special' ? 'special' : 'regular';
-  const cfg          = await AppConfig.get();
-  const breakdown    = cfg.poojaBreakdown?.[variantKey] || [];
-  const totalCost    = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
-  const label        = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}`;
-  const year         = poojaDateObj.getFullYear();
-
-  // ── 1. Expense record ─────────────────────────────────────
-  const expSeq    = await AppConfig.nextSeq('expense');
-  const voucherNo = `${RCP_YEAR}/EXP/${expSeq}`;
-
-  await Expense.create({
-    voucherNo,
-    date:        poojaDateObj,
-    vendor:      'Temple Fund',
-    description: label,
-    category:    'Puja & Rituals',
-    expType:     'Temple Operations',
-    amount:      totalCost,
-    mode:        'Cash',
-    paidBy:      p.approvedBy,
-    remarks:     `Approved by ${p.approvedBy} — ${slot.receiptNo}`,
-    year,
-  });
-
-  // NOTE: VendorTransaction credits are created only when admin clicks "Pooja Done"
-  // (markPoojaComplete). Not at approval time. This prevents double-creation.
-
-  // ── 2. General ledger debit ───────────────────────────────
-  try {
-    const txnSeq = await AppConfig.nextSeq('txn');
-    await Transaction.create({
-      txnNo:       `${RCP_YEAR}/TXN/${txnSeq}`,
-      date:        poojaDateObj,
-      type:        'debit',
-      category:    'Expense',
-      amount:      totalCost,
-      description: label,
-      party:       'Temple Fund',
-      mode:        'Cash',
-      refType:     'expense',
-      refId:       voucherNo,
-      recordedBy:  p.approvedBy,
-      year,
-    });
-  } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
-
-  // ── 3. Update PoojaSchedule slot ─────────────────────────
+  // ── Update PoojaSchedule slot (Expense is deferred to markPoojaComplete) ──
+  // Expense + vendor payments are only created when the admin clicks "Pooja Done".
+  // Approval just marks the slot as temple_funded so it appears in the schedule.
   await PoojaSchedule.updateOne(
     { _id: slot._id },
     { $set: {
-      status:           'temple_funded',
-      approvalStatus:   'approved',
-      approvedBy:       p.approvedBy,
-      approvedAt:       new Date(),
-      expenseVoucherNo: voucherNo,
+      status:         'temple_funded',
+      approvalStatus: 'approved',
+      approvedBy:     p.approvedBy,
+      approvedAt:     new Date(),
     }}
   );
 
-  // ── 5. Update linked Donation ─────────────────────────────
+  // ── Update linked Donation ────────────────────────────────
   if (slot.donationId) {
+    const cfg       = await AppConfig.get();
+    const variantKey = (slot.poojaVariant === 'Special') ? 'special' : 'regular';
+    const totalCost  = (cfg.poojaBreakdown?.[variantKey] || []).reduce((s, l) => s + (l.amount || 0), 0);
     await Donation.updateOne(
       { _id: slot.donationId },
       { $set: {
@@ -1770,7 +1730,7 @@ async function approvePooja(p) {
     );
   }
 
-  return ok({ receiptNo: slot.receiptNo, voucherNo, vendorTxns: 0 });
+  return ok({ receiptNo: slot.receiptNo, vendorTxns: 0 });
 }
 
 async function rejectPooja(p) {
@@ -1828,67 +1788,24 @@ async function markTempleFunded(p) {
   if (slot.status === 'temple_funded')  return err('Already temple-funded');
   if (slot.status === 'donor_funded')   return err('Slot has a donor — use approvePooja instead');
 
-  const poojaDateObj = new Date(slot.poojaDate);
-  const variant      = p.variant || slot.poojaVariant || 'Regular';
-  const variantKey   = variant === 'Special' ? 'special' : 'regular';
-  const cfg          = await AppConfig.get();
-  const breakdown    = cfg.poojaBreakdown?.[variantKey] || [];
-  const totalCost    = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
-  const label        = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}`;
-  const year         = poojaDateObj.getFullYear();
+  // Expense + vendor payments are deferred to markPoojaComplete ("Pooja Done").
+  // This function only marks the slot as temple-funded for scheduling purposes.
+  const variant    = p.variant || slot.poojaVariant || 'Regular';
 
-  // 1. Expense record
-  const expSeq    = await AppConfig.nextSeq('expense');
-  const voucherNo = `${RCP_YEAR}/EXP/${expSeq}`;
-  await Expense.create({
-    voucherNo,
-    date:        poojaDateObj,
-    vendor:      'Temple Fund',
-    description: label,
-    category:    'Puja & Rituals',
-    expType:     'Temple Operations',
-    amount:      totalCost,
-    mode:        'Cash',
-    paidBy:      p.approvedBy,
-    year,
-  });
-
-  // NOTE: VendorTransaction credits are deferred to markPoojaComplete ("Pooja Done" button).
-
-  // 2. General ledger debit
-  try {
-    const txnSeq = await AppConfig.nextSeq('txn');
-    await Transaction.create({
-      txnNo:       `${RCP_YEAR}/TXN/${txnSeq}`,
-      date:        poojaDateObj,
-      type:        'debit',
-      category:    'Expense',
-      amount:      totalCost,
-      description: label,
-      party:       'Temple Fund',
-      mode:        'Cash',
-      refType:     'expense',
-      refId:       voucherNo,
-      recordedBy:  p.approvedBy,
-      year,
-    });
-  } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
-
-  // 4. Update PoojaSchedule slot
+  // Update PoojaSchedule slot
   await PoojaSchedule.updateOne(
     { _id: slot._id },
     { $set: {
-      status:           'temple_funded',
-      isTempleFunded:   true,
-      approvalStatus:   'approved',
-      approvedBy:       p.approvedBy,
-      approvedAt:       new Date(),
-      poojaVariant:     variant,
-      expenseVoucherNo: voucherNo,
+      status:         'temple_funded',
+      isTempleFunded: true,
+      approvalStatus: 'approved',
+      approvedBy:     p.approvedBy,
+      approvedAt:     new Date(),
+      poojaVariant:   variant,
     }}
   );
 
-  return ok({ voucherNo, vendorTxns: 0, totalCost });
+  return ok({ vendorTxns: 0 });
 }
 
 // ── Mark Pooja Complete (Pooja Done button) ───────────────
@@ -2267,6 +2184,133 @@ async function deleteBudgetItem(p) {
     { $pull: { items: { _id: p.itemId } } }
   );
   return ok({ message: 'Deleted' });
+}
+
+// ── WebAuthn / Biometric ──────────────────────────────────────────────────────
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
+
+const RP_NAME = 'Sri Ponniamman Temple Trust';
+const RP_ID   = process.env.WEBAUTHN_RP_ID  || 'sureshvelu-92.github.io';
+const ORIGIN  = process.env.WEBAUTHN_ORIGIN || 'https://sureshvelu-92.github.io';
+
+// GET ?action=webauthnRegisterOptions&name=<userName>
+async function webauthnRegisterOptions(p) {
+  if (!p.name) return err('name required');
+  const user = await User.findOne({ name: p.name, isActive: true }).select('+currentChallenge');
+  if (!user) return err('User not found');
+  const options = await generateRegistrationOptions({
+    rpName: RP_NAME,
+    rpID:   RP_ID,
+    userID: Buffer.from(user._id.toString()),
+    userName: user.name,
+    attestationType: 'none',
+    authenticatorSelection: {
+      residentKey:      'preferred',
+      userVerification: 'preferred',
+    },
+    excludeCredentials: user.webAuthnCredentials.map(c => ({
+      id:         c.credentialID,
+      type:       'public-key',
+      transports: c.transports,
+    })),
+  });
+  user.currentChallenge = options.challenge;
+  await user.save();
+  return ok({ options });
+}
+
+// POST ?action=webauthnRegisterVerify  body: { name, response, label }
+async function webauthnRegisterVerify(p) {
+  if (!p.name) return err('name required');
+  const user = await User.findOne({ name: p.name, isActive: true }).select('+currentChallenge');
+  if (!user || !user.currentChallenge) return err('No registration in progress');
+  let body;
+  try { body = typeof p.response === 'string' ? JSON.parse(p.response) : p.response; }
+  catch { return err('Invalid response JSON'); }
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response:          body,
+      expectedChallenge: user.currentChallenge,
+      expectedOrigin:    ORIGIN,
+      expectedRPID:      RP_ID,
+    });
+  } catch (e) {
+    return err(e.message || 'Verification error');
+  }
+  if (!verification.verified) return err('Verification failed');
+  const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+  user.webAuthnCredentials.push({
+    credentialID:        Buffer.from(credential.id).toString('base64url'),
+    credentialPublicKey: Buffer.from(credential.publicKey).toString('base64url'),
+    counter:             credential.counter,
+    deviceType:          credentialDeviceType,
+    backedUp:            credentialBackedUp,
+    transports:          body.response?.transports ?? [],
+    label:               p.label || 'My device',
+  });
+  user.currentChallenge = null;
+  await user.save();
+  return ok({ message: 'Biometric registered successfully' });
+}
+
+// GET ?action=webauthnAuthOptions&name=<userName>
+async function webauthnAuthOptions(p) {
+  if (!p.name) return err('name required');
+  const user = await User.findOne({ name: p.name, isActive: true }).select('+currentChallenge');
+  if (!user) return err('User not found');
+  if (!user.webAuthnCredentials.length) return err('No biometric registered for this user');
+  const options = await generateAuthenticationOptions({
+    rpID:             RP_ID,
+    userVerification: 'preferred',
+    allowCredentials: user.webAuthnCredentials.map(c => ({
+      id:         c.credentialID,
+      type:       'public-key',
+      transports: c.transports,
+    })),
+  });
+  user.currentChallenge = options.challenge;
+  await user.save();
+  return ok({ options });
+}
+
+// POST ?action=webauthnAuthVerify  body: { name, response }
+async function webauthnAuthVerify(p) {
+  if (!p.name) return err('name required');
+  const user = await User.findOne({ name: p.name, isActive: true }).select('+currentChallenge +webAuthnCredentials');
+  if (!user || !user.currentChallenge) return err('No authentication in progress');
+  let body;
+  try { body = typeof p.response === 'string' ? JSON.parse(p.response) : p.response; }
+  catch { return err('Invalid response JSON'); }
+  const credential = user.webAuthnCredentials.find(c => c.credentialID === body.id);
+  if (!credential) return err('Credential not found');
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response:          body,
+      expectedChallenge: user.currentChallenge,
+      expectedOrigin:    ORIGIN,
+      expectedRPID:      RP_ID,
+      credential: {
+        id:         credential.credentialID,
+        publicKey:  Buffer.from(credential.credentialPublicKey, 'base64url'),
+        counter:    credential.counter,
+        transports: credential.transports,
+      },
+    });
+  } catch (e) {
+    return err(e.message || 'Authentication error');
+  }
+  if (!verification.verified) return err('Authentication failed');
+  credential.counter   = verification.authenticationInfo.newCounter;
+  user.currentChallenge = null;
+  await user.save();
+  return ok({ name: user.name, role: user.role });
 }
 
 module.exports = router;
