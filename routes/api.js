@@ -462,7 +462,7 @@ async function getMonthlyReport(p) {
   const from = new Date(Date.UTC(year, month - 1, 1));
   const to   = new Date(Date.UTC(year, month, 1));
 
-  const [donAgg, expAgg, donRows, expRows, otherIncAgg, cumulativePendingAgg] = await Promise.all([
+  const [donAgg, expAgg, donRows, expRows, otherIncAgg, cumulativePendingAgg, prevDonAgg, prevExpAgg, prevOtherAgg] = await Promise.all([
     // Donation summary
     Donation.aggregate([
       { $match: { date: { $gte: from, $lt: to } } },
@@ -500,11 +500,28 @@ async function getMonthlyReport(p) {
       { $match: { balance: { $gt: 0 } } },
       { $group: { _id: null, total: { $sum: '$balance' }, count: { $sum: 1 } } },
     ]),
+    // Opening balance — all donations received BEFORE this month
+    Donation.aggregate([
+      { $match: { date: { $lt: from } } },
+      { $group: { _id: null, received: { $sum: '$received' } } },
+    ]),
+    // Opening balance — all expenses BEFORE this month
+    Expense.aggregate([
+      { $match: { date: { $lt: from } } },
+      { $group: { _id: null, spent: { $sum: '$amount' } } },
+    ]),
+    // Opening balance — all manual other income BEFORE this month
+    Transaction.aggregate([
+      { $match: { date: { $lt: from }, type: 'credit', refType: { $in: ['manual'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
   ]);
 
-  const dSumRaw  = donAgg[0] || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0, byType: [] };
-  const eSumRaw  = expAgg[0] || { totalSpent: 0, count: 0, byCategory: [], byVendor: [] };
+  const dSumRaw    = donAgg[0] || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0, byType: [] };
+  const eSumRaw    = expAgg[0] || { totalSpent: 0, count: 0, byCategory: [], byVendor: [] };
   const cumPending = (cumulativePendingAgg[0] || { total: 0, count: 0 });
+
+  const openingBalance = (prevDonAgg[0]?.received ?? 0) + (prevOtherAgg[0]?.total ?? 0) - (prevExpAgg[0]?.spent ?? 0);
 
   // Summarise byType
   const donByType = {};
@@ -560,7 +577,9 @@ async function getMonthlyReport(p) {
       rows:        expRows.map(mapExpense),
     },
     totalIncome,
-    netBalance: totalIncome - eSumRaw.totalSpent,
+    netBalance:             totalIncome - eSumRaw.totalSpent,
+    openingBalance,
+    closingBalance:         openingBalance + totalIncome - eSumRaw.totalSpent,
     cumulativePending:      cumPending.total,
     cumulativePendingCount: cumPending.count,
   });
@@ -573,7 +592,8 @@ async function getYearlyReport(p) {
   const from = new Date(Date.UTC(year, 0, 1));
   const to   = new Date(Date.UTC(year + 1, 0, 1));
 
-  const [donMonthly, expMonthly, donByType, expByCat, expByVendor, otherIncMonthly] = await Promise.all([
+  const [donMonthly, expMonthly, donByType, expByCat, expByVendor, otherIncMonthly,
+         prevYearDonAgg, prevYearExpAgg, prevYearOtherAgg] = await Promise.all([
     // Donations month-by-month
     Donation.aggregate([
       { $match: { date: { $gte: from, $lt: to } } },
@@ -620,33 +640,60 @@ async function getYearlyReport(p) {
       { $group: { _id: { $month: '$date' }, total: { $sum: '$amount' } } },
       { $sort: { _id: 1 } },
     ]),
+    // Opening balance — all donations received BEFORE this year
+    Donation.aggregate([
+      { $match: { date: { $lt: from } } },
+      { $group: { _id: null, received: { $sum: '$received' } } },
+    ]),
+    // Opening balance — all expenses BEFORE this year
+    Expense.aggregate([
+      { $match: { date: { $lt: from } } },
+      { $group: { _id: null, spent: { $sum: '$amount' } } },
+    ]),
+    // Opening balance — all manual other income BEFORE this year
+    Transaction.aggregate([
+      { $match: { date: { $lt: from }, type: 'credit', refType: { $in: ['manual'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
   ]);
 
   const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-  // Build 12-month grid
+  // Year opening balance
+  const yearOpeningBalance = (prevYearDonAgg[0]?.received ?? 0)
+                            + (prevYearOtherAgg[0]?.total ?? 0)
+                            - (prevYearExpAgg[0]?.spent ?? 0);
+
+  // Build 12-month grid with running opening/closing balance per month
   const donMap    = Object.fromEntries(donMonthly.map(r => [r._id, r]));
   const expMap    = Object.fromEntries(expMonthly.map(r => [r._id, r]));
   const otherMap  = Object.fromEntries((otherIncMonthly || []).map(r => [r._id, r.total]));
 
+  let runningBalance = yearOpeningBalance;
   const monthlyGrid = Array.from({ length: 12 }, (_, i) => {
     const m   = i + 1;
     const don = donMap[m] || { pledged: 0, received: 0, balance: 0, count: 0 };
     const exp = expMap[m] || { spent: 0, count: 0 };
     const other = otherMap[m] || 0;
     const totalIncome = don.received + other;
+    const net = totalIncome - exp.spent;
+    const opening = runningBalance;
+    const closing = opening + net;
+    runningBalance = closing;
     return {
-      month:       MONTH_NAMES[m],
-      monthNo:     m,
-      pledged:     don.pledged,
-      received:    don.received,
-      otherIncome: other,
+      month:          MONTH_NAMES[m],
+      monthNo:        m,
+      pledged:        don.pledged,
+      received:       don.received,
+      otherIncome:    other,
       totalIncome,
-      balance:     don.balance,
-      donCount:    don.count,
-      spent:       exp.spent,
-      expCount:    exp.count,
-      net:         totalIncome - exp.spent,
+      balance:        don.balance,
+      donCount:       don.count,
+      spent:          exp.spent,
+      expCount:       exp.count,
+      net,
+      openingBalance: opening,
+      closingBalance: closing,
     };
   });
 
@@ -665,6 +712,8 @@ async function getYearlyReport(p) {
       totalBalance:    monthlyGrid.reduce((s, r) => s + r.balance, 0),
       totalSpent,
       netBalance:      totalIncome - totalSpent,
+      openingBalance:  yearOpeningBalance,
+      closingBalance:  yearOpeningBalance + totalIncome - totalSpent,
     },
     monthlyGrid,
     donByType:   donByType.map(r => ({ type: r._id || 'Others', total: r.total, count: r.count })),
