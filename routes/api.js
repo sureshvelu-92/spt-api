@@ -270,7 +270,7 @@ async function addPooja(p) {
 
   // ── 1. Expense entry ─────────────────────────────────────
   const expSeq    = await AppConfig.nextSeq('expense');
-  const voucherNo = `${RCP_YEAR}/EXP/${expSeq}`;
+  const voucherNo = `${RCP_YEAR}/EX/${expSeq}`;
   await Expense.create({
     voucherNo,
     date:        poojaDate,
@@ -1874,7 +1874,7 @@ async function markPoojaComplete(p) {
   // ── If unfunded → promote to temple_funded ────────────────────────────────
   if (slot.status === 'unfunded') {
     const expSeq = await AppConfig.nextSeq('expense');
-    voucherNo    = `${RCP_YEAR}/EXP/${expSeq}`;
+    voucherNo    = `${RCP_YEAR}/EX/${expSeq}`;
     const label  = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}${personSuffix}`;
 
     await Expense.create({
@@ -1905,7 +1905,7 @@ async function markPoojaComplete(p) {
       voucherNo = slot.expenseVoucherNo;
     } else {
       const expSeq = await AppConfig.nextSeq('expense');
-      voucherNo    = `${RCP_YEAR}/EXP/${expSeq}`;
+      voucherNo    = `${RCP_YEAR}/EX/${expSeq}`;
       const label  = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}${personSuffix}`;
       await Expense.create({
         voucherNo, date: poojaDateObj, vendor: 'Temple Fund',
