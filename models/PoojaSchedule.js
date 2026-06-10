@@ -40,11 +40,17 @@ const poojaScheduleSchema = new mongoose.Schema({
   receiptNo:        { type: String, default: '' },              // denorm for fast lookup
   expenseVoucherNo: { type: String, default: '' },              // set after approval
 
+  // ── Completion tracking ───────────────────────────────────
+  // Set true by markPoojaComplete — vendor transactions have been created for this slot
+  hasVendorTxn: { type: Boolean, default: false, index: true },
+
   notes: { type: String, default: '' },
 }, { timestamps: true });
 
-// Unique: one record per (poojaDate + poojaType) — prevents duplicate slots
-poojaScheduleSchema.index({ poojaDate: 1, poojaType: 1 }, { unique: true });
+// Unique slot: (poojaDate + poojaType + personName)
+// This allows two Birthday Poojas on the same day for different people.
+// For non-personal poojas (Weekly, Amavasai etc.), personName is '' so still unique per type.
+poojaScheduleSchema.index({ poojaDate: 1, poojaType: 1, personName: 1 }, { unique: true });
 poojaScheduleSchema.index({ year: 1, month: 1 });
 
 module.exports = mongoose.model('PoojaSchedule', poojaScheduleSchema);

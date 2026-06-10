@@ -60,6 +60,22 @@ async function main() {
 
   const db = mongoose.connection.db;
 
+  // ── Step 0: Drop old PoojaSchedule unique index so new one (with personName) can be created
+  console.log('── Step 0: Migrate PoojaSchedule unique index ──────────');
+  try {
+    const poojaCol = db.collection('poojaschedules');
+    const psIndexes = await poojaCol.indexes();
+    const oldIdx = psIndexes.find(i => i.name === 'poojaDate_1_poojaType_1');
+    if (oldIdx) {
+      await poojaCol.dropIndex('poojaDate_1_poojaType_1');
+      console.log('  ↻ Dropped old poojaDate+poojaType unique index');
+    } else {
+      console.log('  ✓ Old index not present (already migrated or fresh DB)');
+    }
+  } catch (e) {
+    console.error('  ✗ PoojaSchedule index migration:', e.message);
+  }
+
   // ── Step 1: Mongoose schema indexes ─────────────────────
   console.log('── Step 1: Schema indexes ──────────────────────────────');
   const modelNames = Object.keys(mongoose.models);

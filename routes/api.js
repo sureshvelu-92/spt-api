@@ -77,6 +77,7 @@ router.get('/', auth, async (req, res) => {
       case 'approvePooja':       return res.json(await approvePooja(p));
       case 'rejectPooja':        return res.json(await rejectPooja(p));
       case 'markTempleFunded':   return res.json(await markTempleFunded(p));
+      case 'markPoojaComplete':  return res.json(await markPoojaComplete(p));
 
       case 'getUsers':          return res.json(await getUsers());
       case 'addUser':           return res.json(await addUser(p));
@@ -131,7 +132,7 @@ async function addDonation(p) {
     receivedBy:   p.receivedBy   || '',
     receivedById: p.receivedById ? require('mongoose').Types.ObjectId.isValid(p.receivedById) ? p.receivedById : null : null,
     notes: p.notes || p.purpose || '',
-    status, isPending: isPend,
+    status,
     donType: p.donType || 'Aadi Festival',
     personName: p.personName || '',
     poojaType:    p.poojaType    || '',
@@ -166,38 +167,8 @@ async function addDonation(p) {
     } catch (e) { console.error('Ledger credit error (non-fatal):', e.message); }
   }
 
-  // ── Vendor Ledger: create credit entries from AppConfig breakdown ──
-  // Only run for donations that carry a specific poojaType + variant from the breakdown config
-  if (p.poojaType && p.poojaVariant) {
-    try {
-      const cfg        = await AppConfig.get();
-      const variantKey = p.poojaVariant === 'Special' ? 'special' : 'regular';
-      const breakdown  = cfg.poojaBreakdown?.[variantKey] || [];
-      if (breakdown.length) {
-        const personSuffix = p.personName ? ` | ${p.personName}` : '';
-        const description  = `${p.poojaType} (${p.poojaVariant}) — ${receiptNo}${personSuffix}`;
-        // Use poojaDate (scheduled date) as the transaction date if available
-        const txnDate = p.poojaDate ? new Date(p.poojaDate) : donDate;
-        const txns = breakdown.map(line => ({
-          vendorName: line.vendorName,
-          vendorId:   line.vendorId   || null,
-          date:       txnDate,
-          description,
-          item:       line.item || '',
-          credit:     line.amount || 0,
-          debit:      0,
-          refType:    'pooja',
-          refId:      receiptNo,
-          poojaName:  p.poojaType,
-          variant:    p.poojaVariant,
-          isSettled:  false,
-        }));
-        await VendorTransaction.insertMany(txns);
-      }
-    } catch (e) {
-      console.error('Vendor ledger error (non-fatal):', e.message);
-    }
-  }
+  // NOTE: Vendor transactions are created later via markPoojaComplete ("Pooja Done" button)
+  // They are NOT created at donation time.
 
   // ── Link / update PoojaSchedule slot ─────────────────────
   if (p.poojaType && p.poojaVariant) {
@@ -206,17 +177,23 @@ async function addDonation(p) {
       const utcDate = new Date(Date.UTC(
         effDate.getUTCFullYear(), effDate.getUTCMonth(), effDate.getUTCDate()
       ));
-      // Find existing slot or create new one (for Birthday/Anniversary)
+      // Multiple poojas can coexist on the same day (Weekly + Birthday + Amavasai etc.)
+      // Unique key is (poojaDate + poojaType + personName) — allows two Birthdays for different people
+      const personKey = p.personName || '';
+
+      // Find existing slot for this exact pooja
       const existingSlot = await PoojaSchedule.findOne({
-        poojaDate: utcDate,
-        poojaType: p.poojaType,
+        poojaDate:  utcDate,
+        poojaType:  p.poojaType,
+        personName: personKey,
       });
 
+      const donDoc = await Donation.findOne({ receiptNo });
       const slotData = {
-        status:       'donor_funded',
-        poojaVariant: p.poojaVariant,
-        personName:   p.personName || '',
-        donationId:   (await Donation.findOne({ receiptNo }))._id,
+        status:         'donor_funded',
+        poojaVariant:   p.poojaVariant,
+        personName:     personKey,
+        donationId:     donDoc._id,
         receiptNo,
         isTempleFunded: false,
         approvalStatus: null,
@@ -227,14 +204,13 @@ async function addDonation(p) {
         await PoojaSchedule.updateOne({ _id: existingSlot._id }, { $set: slotData });
         scheduleId = existingSlot._id;
       } else {
-        // Special pooja not on a standard slot — create new entry
         const dow = utcDate.getUTCDay();
         const dayType = dow === 2 ? 'Tuesday' : dow === 5 ? 'Friday' : dow === 0 ? 'Sunday' : 'Special';
         const newSlot = await PoojaSchedule.findOneAndUpdate(
-          { poojaDate: utcDate, poojaType: p.poojaType },
+          { poojaDate: utcDate, poojaType: p.poojaType, personName: personKey },
           { $set: {
             poojaDate: utcDate,
-            year: utcDate.getUTCFullYear(),
+            year:  utcDate.getUTCFullYear(),
             month: utcDate.getUTCMonth() + 1,
             dayType,
             poojaType: p.poojaType,
@@ -246,17 +222,6 @@ async function addDonation(p) {
       }
       // Backlink scheduleId on donation
       await Donation.updateOne({ receiptNo }, { $set: { poojaScheduleId: scheduleId } });
-
-      // If this is a Birthday/Anniversary/Amavasai/Pournami pooja,
-      // remove any unfunded Weekly Pooja slot on the same day (it's not needed)
-      const SUPERSEDES_WEEKLY = ['Birthday Pooja','Anniversary Pooja','Amavasai Pooja','Pournami Pooja'];
-      if (SUPERSEDES_WEEKLY.includes(p.poojaType)) {
-        await PoojaSchedule.deleteOne({
-          poojaDate: utcDate,
-          poojaType: 'Weekly Pooja',
-          status:    'unfunded',
-        });
-      }
     } catch (e) {
       console.error('PoojaSchedule link error (non-fatal):', e.message);
     }
@@ -459,7 +424,6 @@ async function updateReceived(p) {
     received:   newReceived,
     balance:    Math.max(0, newBalance),
     status:     newStatus,
-    isPending:  newStatus !== 'Received',
     mode:       p.mode || existing.mode || 'Cash',
   };
   if (p.receivedBy) update.receivedBy = p.receivedBy;
@@ -797,7 +761,7 @@ function mapDonation(d) {
     poojaType:      d.poojaType   || '',
     poojaVariant:   d.poojaVariant || '',
     poojaDate:      d.poojaDate ? fmtDate(d.poojaDate) : '',
-    isPending:      d.isPending,
+    isPending:      d.status !== 'Received',   // computed from status — not stored
     _id:            d._id,
   };
 }
@@ -1499,6 +1463,26 @@ async function getPoojaSchedule(p) {
     }
 
     dbRows = await PoojaSchedule.find({ year, month }).sort({ poojaDate: 1 }).lean();
+  } else {
+    // DB rows already exist — still enforce: no Weekly Pooja on days that have a
+    // Birthday/Anniversary/Amavasai/Pournami slot (handles data that pre-dates this rule).
+    const SUPERSEDES = new Set(['Birthday Pooja','Anniversary Pooja','Amavasai Pooja','Pournami Pooja']);
+    const supersedingDates = new Set(
+      dbRows.filter(r => SUPERSEDES.has(r.poojaType)).map(r => isoDate(new Date(r.poojaDate)))
+    );
+    if (supersedingDates.size > 0) {
+      const dateObjs = [...supersedingDates].map(s => new Date(s + 'T00:00:00Z'));
+      await PoojaSchedule.deleteMany({
+        year, month,
+        poojaType: 'Weekly Pooja',
+        poojaDate: { $in: dateObjs },
+        status:    'unfunded',
+      });
+      // Remove from in-memory rows so the caller sees the cleaned list
+      dbRows = dbRows.filter(r =>
+        !(r.poojaType === 'Weekly Pooja' && supersedingDates.has(isoDate(new Date(r.poojaDate))))
+      );
+    }
   }
 
   // ── Enrich with vendor transaction presence ───────────────
@@ -1586,7 +1570,6 @@ async function autoFillSchedule(p) {
         balance:        totalCost,
         mode:           '',
         status:         'Pending',
-        isPending:      true,
         donType:        slot.poojaType,
         poojaType:      slot.poojaType,
         poojaVariant:   variant,
@@ -1732,7 +1715,6 @@ async function approvePooja(p) {
         approvedBy:     p.approvedBy,
         approvedAt:     new Date(),
         status:         'Received',
-        isPending:      false,
         received:       totalCost,
         balance:        0,
         mode:           'Cash',
@@ -1875,6 +1857,120 @@ async function markTempleFunded(p) {
   );
 
   return ok({ voucherNo, vendorTxns: breakdown.length, totalCost });
+}
+
+// ── Mark Pooja Complete (Pooja Done button) ───────────────
+// Creates vendor transactions + expense when pooja is actually performed.
+// If slot is unfunded → captures as temple-funded first.
+// If slot is donor_funded → creates vendor txns against the receipt.
+async function markPoojaComplete(p) {
+  if (!p.scheduleId) return err('scheduleId required');
+  if (!p.doneBy)     return err('doneBy required');
+
+  const slot = await PoojaSchedule.findById(p.scheduleId).lean();
+  if (!slot)                    return err('PoojaSchedule slot not found');
+  if (slot.hasVendorTxn)        return err('Pooja already marked as done');
+  if (slot.status === 'rejected') return err('Rejected slots cannot be completed');
+
+  const poojaDateObj = new Date(slot.poojaDate);
+  const variant      = p.variant || slot.poojaVariant || 'Regular';
+  const variantKey   = variant === 'Special' ? 'special' : 'regular';
+  const cfg          = await AppConfig.get();
+  const breakdown    = cfg.poojaBreakdown?.[variantKey] || [];
+  const totalCost    = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
+  const year         = poojaDateObj.getFullYear();
+  const personSuffix = slot.personName ? ` | ${slot.personName}` : '';
+
+  let refId       = slot.receiptNo || '';
+  let voucherNo   = '';
+  const isTemple  = slot.status === 'unfunded' || slot.status === 'pending_approval' || slot.status === 'temple_funded';
+
+  // If unfunded → promote to temple_funded
+  if (slot.status === 'unfunded') {
+    const expSeq = await AppConfig.nextSeq('expense');
+    voucherNo    = `${RCP_YEAR}/EXP/${expSeq}`;
+    const label  = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}${personSuffix}`;
+
+    await Expense.create({
+      voucherNo,
+      date:        poojaDateObj,
+      vendor:      'Temple Fund',
+      description: label,
+      category:    'Puja & Rituals',
+      expType:     'Temple Operations',
+      amount:      totalCost,
+      mode:        'Cash',
+      paidBy:      p.doneBy,
+      year,
+    });
+
+    try {
+      const txnSeq = await AppConfig.nextSeq('txn');
+      await Transaction.create({
+        txnNo: `${RCP_YEAR}/TXN/${txnSeq}`, date: poojaDateObj,
+        type: 'debit', category: 'Expense', amount: totalCost,
+        description: label, party: 'Temple Fund', mode: 'Cash',
+        refType: 'expense', refId: voucherNo, recordedBy: p.doneBy, year,
+      });
+    } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
+
+    await PoojaSchedule.updateOne({ _id: slot._id }, { $set: {
+      status: 'temple_funded', isTempleFunded: true,
+      approvalStatus: 'approved', approvedBy: p.doneBy, approvedAt: new Date(),
+      poojaVariant: variant, expenseVoucherNo: voucherNo,
+    }});
+    refId = voucherNo;
+
+  } else if (slot.status === 'pending_approval' || slot.status === 'temple_funded') {
+    // Use or create expense voucherNo
+    if (slot.expenseVoucherNo) {
+      voucherNo = slot.expenseVoucherNo;
+    } else {
+      const expSeq = await AppConfig.nextSeq('expense');
+      voucherNo    = `${RCP_YEAR}/EXP/${expSeq}`;
+      const label  = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}${personSuffix}`;
+      await Expense.create({
+        voucherNo, date: poojaDateObj, vendor: 'Temple Fund',
+        description: label, category: 'Puja & Rituals', expType: 'Temple Operations',
+        amount: totalCost, mode: 'Cash', paidBy: p.doneBy, year,
+      });
+      await PoojaSchedule.updateOne({ _id: slot._id }, { $set: {
+        status: 'temple_funded', approvalStatus: 'approved',
+        approvedBy: p.doneBy, approvedAt: new Date(), expenseVoucherNo: voucherNo,
+      }});
+    }
+    refId = voucherNo;
+  }
+
+  // Create vendor transactions (for all statuses)
+  let vendorTxns = 0;
+  if (breakdown.length) {
+    const label = `${slot.poojaType} (${variant}) — ${isTemple ? 'Temple Fund' : slot.receiptNo}${personSuffix}`;
+    const vtxns = breakdown.map(line => ({
+      vendorName:  line.vendorName,
+      vendorId:    line.vendorId || null,
+      date:        poojaDateObj,
+      description: label,
+      item:        line.item || '',
+      credit:      line.amount || 0,
+      debit:       0,
+      refType:     'pooja',
+      refId,
+      poojaName:   slot.poojaType,
+      variant,
+      isSettled:   false,
+    }));
+    await VendorTransaction.insertMany(vtxns);
+    vendorTxns = vtxns.length;
+  }
+
+  // Mark slot as having vendor txns
+  await PoojaSchedule.updateOne({ _id: slot._id }, { $set: {
+    hasVendorTxn: true,
+    poojaVariant: variant,
+  }});
+
+  return ok({ vendorTxns, totalCost, refId });
 }
 
 // ── Users ─────────────────────────────────────────────────

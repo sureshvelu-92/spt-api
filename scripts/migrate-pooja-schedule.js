@@ -235,6 +235,15 @@ async function main() {
           { refId: don.receiptNo, refType: 'pooja' },
           { $set: { date: effDate } }
         );
+        // If Birthday/Anniversary is linked, remove any unfunded Weekly Pooja on the same day
+        if (don.donType === 'Birthday Pooja' || don.donType === 'Anniversary Pooja') {
+          const deleted = await PoojaSchedule.deleteOne({
+            poojaDate: effDate,
+            poojaType: 'Weekly Pooja',
+            status:    'unfunded',
+          });
+          if (deleted.deletedCount) console.log(`    ↳ removed duplicate Weekly Pooja on ${effIso}`);
+        }
       }
       console.log(`  ✓ Linked  ${don.receiptNo}  ${don.donType}  →  slot ${effIso}`);
       linked++;
@@ -266,6 +275,13 @@ async function main() {
           { refId: don.receiptNo, refType: 'pooja' },
           { $set: { date: effDate } }
         );
+        // Remove any unfunded Weekly Pooja on the same day — Birthday/Anniversary takes priority
+        const deleted = await PoojaSchedule.deleteOne({
+          poojaDate: effDate,
+          poojaType: 'Weekly Pooja',
+          status:    'unfunded',
+        });
+        if (deleted.deletedCount) console.log(`    ↳ removed duplicate Weekly Pooja on ${effIso}`);
       }
       console.log(`  + Created ${don.receiptNo}  ${don.donType}  →  new slot ${effIso} (${DAY_NAMES[donDay]})`);
       newSlots++;

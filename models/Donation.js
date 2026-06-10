@@ -17,18 +17,12 @@ const donationSchema = new mongoose.Schema({
   expectedDate: { type: String, default: '' },
   donType:      { type: String, default: 'Aadi Festival' },
   personName:   { type: String, default: '' },
-  isPending:    { type: Boolean, default: false },
+  // isPending removed — computed as (status !== 'Received') in response mappers
   // Pooja-specific fields
   poojaType:    { type: String, default: '' },   // e.g. "Weekly Pooja"
   poojaVariant: { type: String, default: '' },   // "Regular" | "Special"
-  poojaDate:      { type: Date,    default: null },   // date pooja will be performed
-  isTempleFunded:  { type: Boolean, default: false }, // true = no donor, funded by temple
-  approvalStatus:  { type: String, default: 'approved',
-                     enum: ['pending', 'approved', 'rejected'] },
-  approvedBy:      { type: String, default: '' },
-  approvedAt:      { type: Date,   default: null },
-  rejectedReason:  { type: String, default: '' },
-  // Link to PoojaSchedule (populated after migration / new donations)
+  poojaDate:    { type: Date,   default: null },  // date pooja will be performed
+  // Approval/funding status lives on PoojaSchedule slot, not here
   poojaScheduleId: { type: mongoose.Schema.Types.ObjectId, ref: 'PoojaSchedule', default: null },
   year:         { type: Number, default: () => new Date().getFullYear(), index: true },
 }, { timestamps: true });

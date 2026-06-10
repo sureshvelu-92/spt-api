@@ -1,3 +1,5 @@
+// ⚠️  LEGACY — pooja breakdown config moved to AppConfig.poojaBreakdown. Not used by api.js.
+// Kept for any existing data; do not reference in new code.
 const mongoose = require('mongoose');
 
 const breakdownLineSchema = new mongoose.Schema({

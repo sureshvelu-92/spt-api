@@ -13,8 +13,7 @@ const expenseSchema = new mongoose.Schema({
   expType:     { type: String, default: 'Aadi Festival' },
   vendorId:    { type: require('mongoose').Schema.Types.ObjectId, ref: 'Vendor' },
   paidById:    { type: require('mongoose').Schema.Types.ObjectId, ref: 'User', default: null },
-  poojaTypeId: { type: require('mongoose').Schema.Types.ObjectId, ref: 'PoojaMaster' },
-  paymentId:   { type: require('mongoose').Schema.Types.ObjectId, ref: 'Payment' },
+  // poojaTypeId / paymentId — legacy refs to unused PoojaMaster/Payment models; removed
   year:        { type: Number, default: () => new Date().getFullYear(), index: true },
 }, { timestamps: true });
 

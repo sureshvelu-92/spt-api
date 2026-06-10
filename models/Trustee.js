@@ -1,3 +1,5 @@
+// ⚠️  LEGACY — superseded by User model. Not used by api.js.
+// Kept for any existing data; do not reference in new code.
 const mongoose = require('mongoose');
 const bcrypt   = require('bcryptjs');
 

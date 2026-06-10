@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
-// A vendor payment — one settlement that can cover multiple expense rows
+// ⚠️  LEGACY — not used by api.js. Vendor settlements now use VendorTransaction model.
+// Kept for any existing data; do not reference in new code.
 const paymentSchema = new mongoose.Schema({
   paymentNo:   { type: String, required: true, unique: true, index: true },
   // pattern: 2026/PAY/1
