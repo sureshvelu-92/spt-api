@@ -82,8 +82,15 @@ function buildMonthSlots(year, month) {
   const { amavasai, pournami } = lunarPhases(year, month);
   const weekly = weeklyPoojaDays(year, month);
 
+  // Amavasai / Pournami take priority — no separate Weekly slot on those days
+  const specialDates = new Set([
+    ...amavasai.map(isoDate),
+    ...pournami.map(isoDate),
+  ]);
+
   const slots = [];
   for (const d of weekly) {
+    if (specialDates.has(isoDate(d))) continue; // special pooja supersedes weekly
     const dow = d.getUTCDay();
     const dayType = dow === 2 ? 'Tuesday' : dow === 5 ? 'Friday' : 'Sunday';
     slots.push({ poojaDate: d, year, month, dayType, poojaType: 'Weekly Pooja' });

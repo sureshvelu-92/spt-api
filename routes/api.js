@@ -246,6 +246,17 @@ async function addDonation(p) {
       }
       // Backlink scheduleId on donation
       await Donation.updateOne({ receiptNo }, { $set: { poojaScheduleId: scheduleId } });
+
+      // If this is a Birthday/Anniversary/Amavasai/Pournami pooja,
+      // remove any unfunded Weekly Pooja slot on the same day (it's not needed)
+      const SUPERSEDES_WEEKLY = ['Birthday Pooja','Anniversary Pooja','Amavasai Pooja','Pournami Pooja'];
+      if (SUPERSEDES_WEEKLY.includes(p.poojaType)) {
+        await PoojaSchedule.deleteOne({
+          poojaDate: utcDate,
+          poojaType: 'Weekly Pooja',
+          status:    'unfunded',
+        });
+      }
     } catch (e) {
       console.error('PoojaSchedule link error (non-fatal):', e.message);
     }
@@ -1440,8 +1451,22 @@ async function getPoojaSchedule(p) {
     const { amavasai, pournami } = lunarPhases(year, month);
     const weekly = weeklyPoojaDays(year, month);
 
+    // Days that already have Amavasai/Pournami — weekly pooja not needed on those days
+    const specialDates = new Set([
+      ...amavasai.map(isoDate),
+      ...pournami.map(isoDate),
+    ]);
+
+    // Also check for existing Birthday/Anniversary slots on weekly days
+    const existingSpecial = await PoojaSchedule.find({
+      year, month,
+      poojaType: { $in: ['Birthday Pooja', 'Anniversary Pooja'] },
+    }).select('poojaDate').lean();
+    for (const r of existingSpecial) specialDates.add(isoDate(new Date(r.poojaDate)));
+
     const slots = [];
     for (const d of weekly) {
+      if (specialDates.has(isoDate(d))) continue; // special pooja takes priority
       const dow = d.getUTCDay();
       slots.push({ poojaDate: d, year, month,
         dayType: dow === 2 ? 'Tuesday' : dow === 5 ? 'Friday' : 'Sunday',
@@ -1460,6 +1485,17 @@ async function getPoojaSchedule(p) {
         { $setOnInsert: { ...slot, status: 'unfunded' } },
         { upsert: true, new: true }
       );
+    }
+
+    // Remove any Weekly Pooja slots that clash with special poojas
+    if (specialDates.size > 0) {
+      const specialDateObjs = [...specialDates].map(s => new Date(s + 'T00:00:00Z'));
+      await PoojaSchedule.deleteMany({
+        year, month,
+        poojaType: 'Weekly Pooja',
+        poojaDate: { $in: specialDateObjs },
+        status: 'unfunded',  // only remove if no donor/temple linked
+      });
     }
 
     dbRows = await PoojaSchedule.find({ year, month }).sort({ poojaDate: 1 }).lean();
