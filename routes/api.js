@@ -41,7 +41,8 @@ router.get('/', auth, async (req, res) => {
       case 'addPooja':        return res.json(await addPooja(p));
       case 'addInKindDonation': return res.json(await addInKind(p));
       case 'addExpense':      return res.json(await addExpense(p));
-      case 'getReceipts':     return res.json(await getReceipts());
+      case 'getReceipts':     return res.json(await getReceipts(p));
+      case 'getRecentDonations': return res.json(await getRecentDonations(p));
       case 'getInKindDonations': return res.json(await getInKind());
       case 'getExpenses':     return res.json(await getExpenses());
       case 'getLastSeq':      return res.json(await getLastSeq('donation'));
@@ -392,8 +393,22 @@ async function addExpense(p) {
   return ok({ voucherNo, seq });
 }
 
-async function getReceipts() {
-  const rows = await Donation.find().sort({ date: -1 }).lean();
+async function getReceipts(p = {}) {
+  const limit = parseInt(p.limit) || 0;
+  const page  = parseInt(p.page)  || 1;
+  const skip  = limit ? (page - 1) * limit : 0;
+  const q     = Donation.find().sort({ date: -1 });
+  if (limit) q.skip(skip).limit(limit);
+  const [rows, total] = await Promise.all([
+    q.lean(),
+    limit ? Donation.countDocuments() : Promise.resolve(0),
+  ]);
+  return ok({ data: rows.map(mapDonation), total: total || rows.length, page, limit });
+}
+
+async function getRecentDonations(p = {}) {
+  const limit = parseInt(p.limit) || 5;
+  const rows  = await Donation.find().sort({ date: -1 }).limit(limit).lean();
   return ok({ data: rows.map(mapDonation) });
 }
 
