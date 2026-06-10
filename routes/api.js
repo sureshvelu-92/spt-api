@@ -79,6 +79,7 @@ router.get('/', auth, async (req, res) => {
       case 'rejectPooja':        return res.json(await rejectPooja(p));
       case 'markTempleFunded':   return res.json(await markTempleFunded(p));
       case 'markPoojaComplete':  return res.json(await markPoojaComplete(p));
+      case 'sponsorPooja':       return res.json(await sponsorPooja(p));
 
       case 'getUsers':          return res.json(await getUsers());
       case 'addUser':           return res.json(await addUser(p));
@@ -1800,6 +1801,27 @@ async function markTempleFunded(p) {
   );
 
   return ok({ vendorTxns: 0 });
+}
+
+// ── Sponsor a Pooja ──────────────────────────────────────
+// Record a sponsor name directly on the schedule slot.
+// No donation record required — just sets personName + status donor_funded.
+// Params: scheduleId, sponsorName, approvedBy
+async function sponsorPooja(p) {
+  if (!p.scheduleId)  return err('scheduleId required');
+  if (!p.sponsorName || !p.sponsorName.trim()) return err('sponsorName required');
+  const slot = await PoojaSchedule.findById(p.scheduleId);
+  if (!slot) return err('Slot not found');
+  if (slot.hasVendorTxn) return err('Pooja already completed');
+
+  slot.personName     = p.sponsorName.trim();
+  slot.status         = 'donor_funded';
+  slot.isTempleFunded = false;
+  slot.approvalStatus = 'approved';
+  slot.approvedBy     = p.approvedBy || 'Admin';
+  slot.approvedAt     = new Date();
+  await slot.save();
+  return ok({ message: 'Sponsor recorded' });
 }
 
 // ── Mark Pooja Complete (Pooja Done button) ───────────────
