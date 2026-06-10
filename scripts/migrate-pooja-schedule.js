@@ -37,9 +37,14 @@ const VendorTransaction = require('../models/VendorTransaction');
 const PoojaSchedule     = require('../models/PoojaSchedule');
 
 // ── Config ─────────────────────────────────────────────────
-const START_YEAR  = 2026;
-const START_MONTH = 1;
-const DRY_RUN     = process.argv.includes('--dry-run');
+const DRY_RUN   = process.argv.includes('--dry-run');
+const fromArg   = process.argv.find(a => a.startsWith('--from=') || a === '--from')
+                    ? (process.argv.find(a => a.startsWith('--from='))?.split('=')[1]
+                       ?? process.argv[process.argv.indexOf('--from') + 1])
+                    : null;
+const [START_YEAR, START_MONTH] = fromArg
+  ? [parseInt(fromArg.split('-')[0]), parseInt(fromArg.split('-')[1])]
+  : [2026, 1];
 
 // ── Lunar helpers ──────────────────────────────────────────
 const SYNODIC_MS      = 29.530588853 * 24 * 60 * 60 * 1000;
