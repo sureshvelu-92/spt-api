@@ -462,7 +462,7 @@ async function getMonthlyReport(p) {
   const from = new Date(Date.UTC(year, month - 1, 1));
   const to   = new Date(Date.UTC(year, month, 1));
 
-  const [donAgg, expAgg, donRows, expRows, otherIncAgg] = await Promise.all([
+  const [donAgg, expAgg, donRows, expRows, otherIncAgg, cumulativePendingAgg] = await Promise.all([
     // Donation summary
     Donation.aggregate([
       { $match: { date: { $gte: from, $lt: to } } },
@@ -495,10 +495,16 @@ async function getMonthlyReport(p) {
       { $match: { date: { $gte: from, $lt: to }, type: 'credit', refType: { $in: ['manual'] } } },
       { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]),
+    // ALL-TIME cumulative pending — sum of every unpaid donation balance across all months
+    Donation.aggregate([
+      { $match: { balance: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$balance' }, count: { $sum: 1 } } },
+    ]),
   ]);
 
-  const dSumRaw = donAgg[0] || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0, byType: [] };
-  const eSumRaw = expAgg[0] || { totalSpent: 0, count: 0, byCategory: [], byVendor: [] };
+  const dSumRaw  = donAgg[0] || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0, byType: [] };
+  const eSumRaw  = expAgg[0] || { totalSpent: 0, count: 0, byCategory: [], byVendor: [] };
+  const cumPending = (cumulativePendingAgg[0] || { total: 0, count: 0 });
 
   // Summarise byType
   const donByType = {};
@@ -555,6 +561,8 @@ async function getMonthlyReport(p) {
     },
     totalIncome,
     netBalance: totalIncome - eSumRaw.totalSpent,
+    cumulativePending:      cumPending.total,
+    cumulativePendingCount: cumPending.count,
   });
 }
 
@@ -1835,48 +1843,84 @@ async function markTempleFunded(p) {
 }
 
 // ── Mark Pooja Complete (Pooja Done button) ───────────────
-// Creates vendor transactions + expense when pooja is actually performed.
-// If slot is unfunded → captures as temple-funded first.
-// If slot is donor_funded → creates vendor txns against the receipt.
+//
+// Business rule: per calendar day, vendors are paid ONCE at the highest variant
+// (Special beats Regular). If another slot on the same day already has vendor
+// txns, this slot is simply marked done with no additional txns.
+//
+// Params:
+//   scheduleId   — PoojaSchedule _id
+//   doneBy       — who clicked Done
+//   variant      — override variant (optional)
+//   onlyMarkDone — 'true' to mark done without creating vendor txns (used when
+//                  another slot on the same day already holds the txns)
 async function markPoojaComplete(p) {
   if (!p.scheduleId) return err('scheduleId required');
   if (!p.doneBy)     return err('doneBy required');
 
   const slot = await PoojaSchedule.findById(p.scheduleId).lean();
-  if (!slot)                    return err('PoojaSchedule slot not found');
-  if (slot.hasVendorTxn)        return err('Pooja already marked as done');
+  if (!slot)                      return err('PoojaSchedule slot not found');
+  if (slot.hasVendorTxn)          return err('Pooja already marked as done');
   if (slot.status === 'rejected') return err('Rejected slots cannot be completed');
 
   const poojaDateObj = new Date(slot.poojaDate);
-  const variant      = p.variant || slot.poojaVariant || 'Regular';
-  const variantKey   = variant === 'Special' ? 'special' : 'regular';
+  const year         = poojaDateObj.getFullYear();
+
+  // ── Check if another slot on the SAME DAY already has vendor txns ──────────
+  const dayStart = new Date(Date.UTC(poojaDateObj.getUTCFullYear(), poojaDateObj.getUTCMonth(), poojaDateObj.getUTCDate()));
+  const dayEnd   = new Date(dayStart.getTime() + 86400000);
+  const alreadyDoneToday = await PoojaSchedule.findOne({
+    _id:          { $ne: slot._id },
+    poojaDate:    { $gte: dayStart, $lt: dayEnd },
+    hasVendorTxn: true,
+  }).lean();
+
+  // If another slot on the same day is already done → just mark this one done
+  if (alreadyDoneToday || p.onlyMarkDone === 'true') {
+    await PoojaSchedule.updateOne({ _id: slot._id }, { $set: { hasVendorTxn: true } });
+    return ok({ vendorTxns: 0, totalCost: 0, refId: slot.receiptNo || '', skipped: true });
+  }
+
+  // ── Determine variant ────────────────────────────────────────────────────
+  // Rule: temple-funded slots are always Regular.
+  //       donor-funded slots use the donor's chosen variant (Regular or Special).
+  //       If multiple donor-funded slots exist today, use the highest (Special wins).
+  const isDonorFunded = slot.status === 'donor_funded';
+
+  let variant;
+  if (!isDonorFunded) {
+    // Temple funded → always Regular
+    variant = 'Regular';
+  } else {
+    // Donor funded — check if any donor-funded slot on this day chose Special
+    const donorSlotsToday = await PoojaSchedule.find({
+      poojaDate: { $gte: dayStart, $lt: dayEnd },
+      status:    'donor_funded',
+    }).lean();
+    const hasSpecialDonor = donorSlotsToday.some(s => s.poojaVariant === 'Special');
+    variant = hasSpecialDonor ? 'Special' : (p.variant || slot.poojaVariant || 'Regular');
+  }
+  const variantKey = variant === 'Special' ? 'special' : 'regular';
+
   const cfg          = await AppConfig.get();
   const breakdown    = cfg.poojaBreakdown?.[variantKey] || [];
   const totalCost    = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
-  const year         = poojaDateObj.getFullYear();
   const personSuffix = slot.personName ? ` | ${slot.personName}` : '';
 
-  let refId       = slot.receiptNo || '';
-  let voucherNo   = '';
-  const isTemple  = slot.status === 'unfunded' || slot.status === 'pending_approval' || slot.status === 'temple_funded';
+  let refId     = slot.receiptNo || '';
+  let voucherNo = '';
+  const isTemple = slot.status === 'unfunded' || slot.status === 'pending_approval' || slot.status === 'temple_funded';
 
-  // If unfunded → promote to temple_funded
+  // ── If unfunded → promote to temple_funded ────────────────────────────────
   if (slot.status === 'unfunded') {
     const expSeq = await AppConfig.nextSeq('expense');
     voucherNo    = `${RCP_YEAR}/EXP/${expSeq}`;
     const label  = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}${personSuffix}`;
 
     await Expense.create({
-      voucherNo,
-      date:        poojaDateObj,
-      vendor:      'Temple Fund',
-      description: label,
-      category:    'Puja & Rituals',
-      expType:     'Temple Operations',
-      amount:      totalCost,
-      mode:        'Cash',
-      paidBy:      p.doneBy,
-      year,
+      voucherNo, date: poojaDateObj, vendor: 'Temple Fund',
+      description: label, category: 'Puja & Rituals', expType: 'Temple Operations',
+      amount: totalCost, mode: 'Cash', paidBy: p.doneBy, year,
     });
 
     try {
@@ -1897,7 +1941,6 @@ async function markPoojaComplete(p) {
     refId = voucherNo;
 
   } else if (slot.status === 'pending_approval' || slot.status === 'temple_funded') {
-    // Use or create expense voucherNo
     if (slot.expenseVoucherNo) {
       voucherNo = slot.expenseVoucherNo;
     } else {
@@ -1917,7 +1960,7 @@ async function markPoojaComplete(p) {
     refId = voucherNo;
   }
 
-  // Create vendor transactions (for all statuses)
+  // ── Create vendor transactions — once per day at highest rate ─────────────
   let vendorTxns = 0;
   if (breakdown.length) {
     const label = `${slot.poojaType} (${variant}) — ${isTemple ? 'Temple Fund' : slot.receiptNo}${personSuffix}`;
@@ -1939,7 +1982,7 @@ async function markPoojaComplete(p) {
     vendorTxns = vtxns.length;
   }
 
-  // Mark slot as having vendor txns
+  // ── Mark THIS slot done ───────────────────────────────────────────────────
   await PoojaSchedule.updateOne({ _id: slot._id }, { $set: {
     hasVendorTxn: true,
     poojaVariant: variant,
