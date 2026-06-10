@@ -18,4 +18,10 @@ const expenseSchema = new mongoose.Schema({
   year:        { type: Number, default: () => new Date().getFullYear(), index: true },
 }, { timestamps: true });
 
+// Compound indexes for common query patterns
+expenseSchema.index({ year: 1, date: -1 });          // yearly expense listing
+expenseSchema.index({ year: 1, category: 1 });        // by-category reports
+expenseSchema.index({ vendor: 1, year: 1 });          // per-vendor totals
+expenseSchema.index({ paidBy: 1, year: 1 });          // cash holders (expenses)
+
 module.exports = mongoose.model('Expense', expenseSchema);

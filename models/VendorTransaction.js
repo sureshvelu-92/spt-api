@@ -33,7 +33,10 @@ const vendorTransactionSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// Compound index for payables query: unsettled credits per vendor
-vendorTransactionSchema.index({ vendorName: 1, isSettled: 1, refType: 1 });
+// Compound indexes for common query patterns
+vendorTransactionSchema.index({ vendorName: 1, isSettled: 1, refType: 1 }); // payables
+vendorTransactionSchema.index({ refId: 1, refType: 1 });                    // lookup by receipt/voucher
+vendorTransactionSchema.index({ date: -1, vendorName: 1 });                 // ledger view
+vendorTransactionSchema.index({ vendorName: 1, date: -1 });                 // per-vendor ledger
 
 module.exports = mongoose.model('VendorTransaction', vendorTransactionSchema);

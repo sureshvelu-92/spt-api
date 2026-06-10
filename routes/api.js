@@ -7,6 +7,7 @@ const Vendor            = require('../models/Vendor');
 const VendorTransaction = require('../models/VendorTransaction');
 const Transaction       = require('../models/Transaction');
 const User              = require('../models/User');
+const PoojaSchedule     = require('../models/PoojaSchedule');
 
 const TOKEN = process.env.API_TOKEN || 'SPTT@1985';
 const RCP_YEAR = '2026';
@@ -71,8 +72,9 @@ router.get('/', auth, async (req, res) => {
 
       case 'getPoojaSchedule':  return res.json(await getPoojaSchedule(p));
       case 'autoFillSchedule':  return res.json(await autoFillSchedule(p));
-      case 'approvePooja':      return res.json(await approvePooja(p));
-      case 'rejectPooja':       return res.json(await rejectPooja(p));
+      case 'approvePooja':       return res.json(await approvePooja(p));
+      case 'rejectPooja':        return res.json(await rejectPooja(p));
+      case 'markTempleFunded':   return res.json(await markTempleFunded(p));
 
       case 'getUsers':          return res.json(await getUsers());
       case 'addUser':           return res.json(await addUser(p));
@@ -192,6 +194,58 @@ async function addDonation(p) {
       }
     } catch (e) {
       console.error('Vendor ledger error (non-fatal):', e.message);
+    }
+  }
+
+  // ── Link / update PoojaSchedule slot ─────────────────────
+  if (p.poojaType && p.poojaVariant) {
+    try {
+      const effDate = donationDoc.poojaDate || donDate;
+      const utcDate = new Date(Date.UTC(
+        effDate.getUTCFullYear(), effDate.getUTCMonth(), effDate.getUTCDate()
+      ));
+      // Find existing slot or create new one (for Birthday/Anniversary)
+      const existingSlot = await PoojaSchedule.findOne({
+        poojaDate: utcDate,
+        poojaType: p.poojaType,
+      });
+
+      const slotData = {
+        status:       'donor_funded',
+        poojaVariant: p.poojaVariant,
+        personName:   p.personName || '',
+        donationId:   (await Donation.findOne({ receiptNo }))._id,
+        receiptNo,
+        isTempleFunded: false,
+        approvalStatus: null,
+      };
+
+      let scheduleId;
+      if (existingSlot) {
+        await PoojaSchedule.updateOne({ _id: existingSlot._id }, { $set: slotData });
+        scheduleId = existingSlot._id;
+      } else {
+        // Special pooja not on a standard slot — create new entry
+        const dow = utcDate.getUTCDay();
+        const dayType = dow === 2 ? 'Tuesday' : dow === 5 ? 'Friday' : dow === 0 ? 'Sunday' : 'Special';
+        const newSlot = await PoojaSchedule.findOneAndUpdate(
+          { poojaDate: utcDate, poojaType: p.poojaType },
+          { $set: {
+            poojaDate: utcDate,
+            year: utcDate.getUTCFullYear(),
+            month: utcDate.getUTCMonth() + 1,
+            dayType,
+            poojaType: p.poojaType,
+            ...slotData,
+          }},
+          { upsert: true, new: true }
+        );
+        scheduleId = newSlot._id;
+      }
+      // Backlink scheduleId on donation
+      await Donation.updateOne({ receiptNo }, { $set: { poojaScheduleId: scheduleId } });
+    } catch (e) {
+      console.error('PoojaSchedule link error (non-fatal):', e.message);
     }
   }
 
@@ -1274,118 +1328,82 @@ const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','
 
 function isoDate(d) { return d.toISOString().split('T')[0]; }
 
+/**
+ * getPoojaSchedule — reads from PoojaSchedule collection (populated by migration).
+ * Falls back to computing from lunar/weekly helpers if no DB rows exist for that month.
+ */
 async function getPoojaSchedule(p) {
   const year  = parseInt(p.year  || new Date().getFullYear());
   const month = parseInt(p.month || (new Date().getMonth() + 1));
 
-  const { amavasai, pournami } = lunarPhases(year, month);
-  const weekly = weeklyPoojaDays(year, month);
+  // ── Try reading from PoojaSchedule collection first ──────
+  let dbRows = await PoojaSchedule.find({ year, month })
+    .sort({ poojaDate: 1 })
+    .lean();
 
-  // Build expected schedule
-  const entries = [];
-  for (const d of weekly) {
-    entries.push({ date: d, poojaType: 'Weekly Pooja', dayLabel: DAY_NAMES[d.getUTCDay()] });
-  }
-  for (const d of amavasai) {
-    entries.push({ date: d, poojaType: 'Amavasai Pooja', dayLabel: 'Amavasai' });
-  }
-  for (const d of pournami) {
-    entries.push({ date: d, poojaType: 'Pournami Pooja', dayLabel: 'Pournami' });
-  }
-  entries.sort((a, b) => a.date - b.date);
+  // ── If no rows exist, generate on-the-fly and upsert ─────
+  if (!dbRows.length) {
+    const { amavasai, pournami } = lunarPhases(year, month);
+    const weekly = weeklyPoojaDays(year, month);
 
-  // Query all pooja donations for the month
-  const from = new Date(Date.UTC(year, month - 1, 1));
-  const to   = new Date(Date.UTC(year, month,     1));
-  const POOJA_TYPES = ['Weekly Pooja', 'Amavasai Pooja', 'Pournami Pooja',
-                       'Birthday Pooja', 'Anniversary Pooja'];
-
-  const donations = await Donation.find({
-    donType: { $in: POOJA_TYPES },
-    $or: [
-      { poojaDate: { $gte: from, $lt: to } },
-      { date:      { $gte: from, $lt: to }, poojaDate: { $in: [null, ''] } },
-    ],
-  }).lean();
-
-  // Match donations to scheduled slots (Weekly / Amavasai / Pournami)
-  const matchedDonationIds = new Set();
-  const schedule = entries.map(entry => {
-    const entryIso = isoDate(entry.date);
-    const match = donations.find(d => {
-      const effDate = d.poojaDate ? isoDate(new Date(d.poojaDate)) : isoDate(new Date(d.date));
-      return effDate === entryIso && d.donType === entry.poojaType;
-    });
-    if (match) matchedDonationIds.add(match._id.toString());
-
-    let status = 'unfunded';
-    if (match) {
-      if (!match.isTempleFunded) {
-        status = 'donor_funded';
-      } else if (match.approvalStatus === 'pending') {
-        status = 'pending_approval';
-      } else if (match.approvalStatus === 'rejected') {
-        status = 'unfunded';   // treat rejected as unfunded so it can be re-filled
-      } else {
-        status = 'temple_funded';
-      }
+    const slots = [];
+    for (const d of weekly) {
+      const dow = d.getUTCDay();
+      slots.push({ poojaDate: d, year, month,
+        dayType: dow === 2 ? 'Tuesday' : dow === 5 ? 'Friday' : 'Sunday',
+        poojaType: 'Weekly Pooja' });
+    }
+    for (const d of amavasai) {
+      slots.push({ poojaDate: d, year, month, dayType: 'Amavasai', poojaType: 'Amavasai Pooja' });
+    }
+    for (const d of pournami) {
+      slots.push({ poojaDate: d, year, month, dayType: 'Pournami', poojaType: 'Pournami Pooja' });
     }
 
-    return {
-      date:           entryIso,
-      dayLabel:       entry.dayLabel,
-      poojaType:      entry.poojaType,
-      status,
-      donorName:      match?.donor     || null,
-      receiptNo:      match?.receiptNo || null,
-      donationId:     match?._id?.toString() || null,
-      variant:        match?.poojaVariant || null,
-      approvalStatus: match?.approvalStatus || null,
-      hasVendorTxn:   false,  // enriched later
-    };
-  });
-
-  // Add Birthday / Anniversary / other special poojas as extra entries
-  const EXTRA_TYPES = ['Birthday Pooja', 'Anniversary Pooja'];
-  for (const d of donations) {
-    if (!EXTRA_TYPES.includes(d.donType)) continue;
-    if (matchedDonationIds.has(d._id.toString())) continue; // already matched
-
-    const effDate = d.poojaDate ? isoDate(new Date(d.poojaDate)) : isoDate(new Date(d.date));
-    let status = 'donor_funded';
-    if (d.isTempleFunded) {
-      status = d.approvalStatus === 'pending'  ? 'pending_approval'
-             : d.approvalStatus === 'rejected' ? 'unfunded'
-             : 'temple_funded';
+    for (const slot of slots) {
+      await PoojaSchedule.findOneAndUpdate(
+        { poojaDate: slot.poojaDate, poojaType: slot.poojaType },
+        { $setOnInsert: { ...slot, status: 'unfunded' } },
+        { upsert: true, new: true }
+      );
     }
-    const effDay = new Date(effDate + 'T00:00:00Z');
-    schedule.push({
-      date:           effDate,
-      dayLabel:       DAY_NAMES[effDay.getUTCDay()],
-      poojaType:      d.donType,
-      status,
-      donorName:      d.donor     || null,
-      receiptNo:      d.receiptNo || null,
-      donationId:     d._id.toString(),
-      variant:        d.poojaVariant || null,
-      approvalStatus: d.approvalStatus || null,
-      hasVendorTxn:   false,  // will be enriched below
-    });
+
+    dbRows = await PoojaSchedule.find({ year, month }).sort({ poojaDate: 1 }).lean();
   }
 
-  // Sort the full schedule by date
-  schedule.sort((a, b) => a.date.localeCompare(b.date));
-
-  // Enrich with vendor transaction presence
-  const refIds = schedule
-    .filter(s => s.receiptNo)
-    .map(s => s.receiptNo);
-  const vtxnRefs = refIds.length
-    ? await VendorTransaction.distinct('refId', { refId: { $in: refIds }, refType: 'pooja' })
+  // ── Enrich with vendor transaction presence ───────────────
+  const receiptNos = dbRows.filter(r => r.receiptNo).map(r => r.receiptNo);
+  const vtxnRefs   = receiptNos.length
+    ? await VendorTransaction.distinct('refId', { refId: { $in: receiptNos }, refType: 'pooja' })
     : [];
   const vtxnSet = new Set(vtxnRefs);
-  schedule.forEach(s => {
-    if (s.receiptNo) s.hasVendorTxn = vtxnSet.has(s.receiptNo);
+
+  // ── Also enrich with donor name from Donation ────────────
+  const donIds = dbRows.filter(r => r.donationId).map(r => r.donationId);
+  const donors = donIds.length
+    ? await Donation.find({ _id: { $in: donIds } }, 'donor').lean()
+    : [];
+  const donorMap = Object.fromEntries(donors.map(d => [d._id.toString(), d.donor]));
+
+  const schedule = dbRows.map(row => {
+    const dateIso   = isoDate(new Date(row.poojaDate));
+    const donorName = row.donationId ? (donorMap[row.donationId.toString()] || null) : null;
+    return {
+      _id:            row._id.toString(),
+      date:           dateIso,
+      dayLabel:       row.dayType,
+      poojaType:      row.poojaType,
+      poojaVariant:   row.poojaVariant || null,
+      personName:     row.personName   || null,
+      status:         row.status,
+      donorName,
+      receiptNo:      row.receiptNo    || null,
+      donationId:     row.donationId?.toString() || null,
+      approvalStatus: row.approvalStatus || null,
+      hasVendorTxn:   row.receiptNo ? vtxnSet.has(row.receiptNo)
+                    : row.expenseVoucherNo ? vtxnSet.has(row.expenseVoucherNo)
+                    : false,
+    };
   });
 
   const counts = {
@@ -1403,13 +1421,16 @@ async function autoFillSchedule(p) {
   const year    = parseInt(p.year  || new Date().getFullYear());
   const month   = parseInt(p.month || (new Date().getMonth() + 1));
   const variant = (p.variant === 'Special') ? 'Special' : 'Regular';
-
-  const sched    = await getPoojaSchedule({ year: String(year), month: String(month) });
-  // Only auto-fill slots that are today or in the past (not future poojas)
   const todayIso = isoDate(new Date());
-  const unfunded = sched.schedule.filter(s => s.status === 'unfunded' && s.date <= todayIso);
 
-  if (unfunded.length === 0) return ok({ created: 0, message: 'All poojas already covered' });
+  // Get unfunded slots from PoojaSchedule that are today or past
+  const unfundedSlots = await PoojaSchedule.find({
+    year, month,
+    status:   'unfunded',
+    poojaDate: { $lte: new Date(todayIso + 'T23:59:59Z') },
+  }).lean();
+
+  if (!unfundedSlots.length) return ok({ created: 0, message: 'All past/today poojas covered' });
 
   const cfg        = await AppConfig.get();
   const variantKey = variant === 'Special' ? 'special' : 'regular';
@@ -1417,41 +1438,52 @@ async function autoFillSchedule(p) {
   const totalCost  = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
 
   const created = [];
-  for (const entry of unfunded) {
-    const poojaDateObj = new Date(entry.date + 'T00:00:00Z');
-    const seq      = await AppConfig.nextSeq('donation');
-    const receiptNo = `${RCP_YEAR}/TF/${seq}`;
+  for (const slot of unfundedSlots) {
+    const poojaDateObj = new Date(slot.poojaDate);
+    const seq          = await AppConfig.nextSeq('donation');
+    const receiptNo    = `${RCP_YEAR}/TF/${seq}`;
 
-    // Create Donation record as PENDING APPROVAL — no Expense/VendorTxns yet
-    const donDoc = {
-      receiptNo,
-      date:           poojaDateObj,
-      poojaDate:      poojaDateObj,
-      donor:          'Temple Fund',
-      phone:          '',
-      amount:         totalCost,
-      received:       0,           // not counted until approved
-      balance:        totalCost,
-      mode:           '',
-      status:         'Pending',
-      isPending:      true,
-      donType:        entry.poojaType,
-      poojaType:      entry.poojaType,
-      poojaVariant:   variant,
-      isTempleFunded: true,
-      approvalStatus: 'pending',   // ← awaiting admin approval
-      notes:          `${entry.dayLabel} — Pending approval (${variant})`,
-      receivedBy:     p.recordedBy || 'Auto',
-      year,
-    };
-
-    await Donation.findOneAndUpdate(
+    // 1. Create minimal Donation (financial placeholder, pending approval)
+    const don = await Donation.findOneAndUpdate(
       { receiptNo },
-      { $set: donDoc },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+      { $set: {
+        receiptNo,
+        date:           poojaDateObj,
+        poojaDate:      poojaDateObj,
+        donor:          'Temple Fund',
+        amount:         totalCost,
+        received:       0,
+        balance:        totalCost,
+        mode:           '',
+        status:         'Pending',
+        isPending:      true,
+        donType:        slot.poojaType,
+        poojaType:      slot.poojaType,
+        poojaVariant:   variant,
+        isTempleFunded: true,
+        approvalStatus: 'pending',
+        notes:          `${slot.dayType} — Pending approval (${variant})`,
+        receivedBy:     p.recordedBy || 'Auto',
+        year,
+        poojaScheduleId: slot._id,
+      }},
+      { upsert: true, new: true }
     );
 
-    created.push({ date: entry.date, poojaType: entry.poojaType, receiptNo });
+    // 2. Update PoojaSchedule slot
+    await PoojaSchedule.updateOne(
+      { _id: slot._id },
+      { $set: {
+        status:         'pending_approval',
+        approvalStatus: 'pending',
+        poojaVariant:   variant,
+        donationId:     don._id,
+        receiptNo,
+        isTempleFunded: true,
+      }}
+    );
+
+    created.push({ date: isoDate(poojaDateObj), poojaType: slot.poojaType, receiptNo });
   }
 
   return ok({ created: created.length, details: created });
@@ -1459,30 +1491,41 @@ async function autoFillSchedule(p) {
 
 /**
  * approvePooja — admin approves a pending temple-funded pooja
- * Creates Expense + VendorTransactions + Transaction debit
+ * Looks up PoojaSchedule by id or via Donation, creates Expense + VendorTransactions
  */
 async function approvePooja(p) {
-  if (!p.id && !p.receiptNo) return err('id or receiptNo required');
-  if (!p.approvedBy)         return err('approvedBy required');
+  if (!p.id && !p.receiptNo && !p.scheduleId) return err('id, receiptNo or scheduleId required');
+  if (!p.approvedBy) return err('approvedBy required');
 
-  const query = p.id ? { _id: p.id } : { receiptNo: p.receiptNo };
-  const don   = await Donation.findOne(query).lean();
-  if (!don)                           return err('Donation not found');
-  if (!don.isTempleFunded)            return err('Not a temple-funded pooja');
-  if (don.approvalStatus === 'approved') return err('Already approved');
-  if (don.approvalStatus === 'rejected') return err('Rejected — cannot approve');
+  // Find the schedule slot
+  let slot;
+  if (p.scheduleId) {
+    slot = await PoojaSchedule.findById(p.scheduleId).lean();
+  } else {
+    // Find via donation
+    const donQuery = p.id ? { _id: p.id } : { receiptNo: p.receiptNo };
+    const don = await Donation.findOne(donQuery).lean();
+    if (!don) return err('Donation not found');
+    slot = don.poojaScheduleId
+      ? await PoojaSchedule.findById(don.poojaScheduleId).lean()
+      : await PoojaSchedule.findOne({ receiptNo: don.receiptNo }).lean();
+  }
 
-  const poojaDateObj = don.poojaDate || don.date;
-  const variant      = don.poojaVariant || 'Regular';
+  if (!slot)                               return err('PoojaSchedule slot not found');
+  if (slot.status === 'donor_funded')      return err('Donor-funded — no approval needed');
+  if (slot.status === 'temple_funded')     return err('Already approved');
+  if (slot.approvalStatus !== 'pending')   return err('Not in pending state');
+
+  const poojaDateObj = new Date(slot.poojaDate);
+  const variant      = slot.poojaVariant || 'Regular';
   const variantKey   = variant === 'Special' ? 'special' : 'regular';
   const cfg          = await AppConfig.get();
   const breakdown    = cfg.poojaBreakdown?.[variantKey] || [];
   const totalCost    = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
-  const dayLabel     = don.notes?.split(' — ')[0] || '';
-  const label        = `${don.poojaType} (${variant}) — Temple Fund | ${dayLabel}`;
-  const year         = new Date(poojaDateObj).getFullYear();
+  const label        = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}`;
+  const year         = poojaDateObj.getFullYear();
 
-  // ── 1. Expense record ────────────────────────────────────
+  // ── 1. Expense record ─────────────────────────────────────
   const expSeq    = await AppConfig.nextSeq('expense');
   const voucherNo = `${RCP_YEAR}/EXP/${expSeq}`;
 
@@ -1496,11 +1539,11 @@ async function approvePooja(p) {
     amount:      totalCost,
     mode:        'Cash',
     paidBy:      p.approvedBy,
-    remarks:     `Approved by ${p.approvedBy} — ${don.receiptNo}`,
+    remarks:     `Approved by ${p.approvedBy} — ${slot.receiptNo}`,
     year,
   });
 
-  // ── 2. VendorTransaction credits ─────────────────────────
+  // ── 2. VendorTransaction credits ──────────────────────────
   if (breakdown.length) {
     const vtxns = breakdown.map(line => ({
       vendorName:  line.vendorName,
@@ -1512,7 +1555,7 @@ async function approvePooja(p) {
       debit:       0,
       refType:     'pooja',
       refId:       voucherNo,
-      poojaName:   don.poojaType,
+      poojaName:   slot.poojaType,
       variant,
       isSettled:   false,
     }));
@@ -1538,41 +1581,170 @@ async function approvePooja(p) {
     });
   } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
 
-  // ── 4. Mark Donation as approved ─────────────────────────
-  await Donation.findOneAndUpdate(query, {
-    $set: {
-      approvalStatus: 'approved',
-      approvedBy:     p.approvedBy,
-      approvedAt:     new Date(),
-      status:         'Received',
-      isPending:      false,
-      received:       totalCost,
-      balance:        0,
-      mode:           'Cash',
-      notes:          `${dayLabel} — Approved by ${p.approvedBy} (${variant})`,
-    },
-  });
+  // ── 4. Update PoojaSchedule slot ─────────────────────────
+  await PoojaSchedule.updateOne(
+    { _id: slot._id },
+    { $set: {
+      status:           'temple_funded',
+      approvalStatus:   'approved',
+      approvedBy:       p.approvedBy,
+      approvedAt:       new Date(),
+      expenseVoucherNo: voucherNo,
+    }}
+  );
 
-  return ok({ receiptNo: don.receiptNo, voucherNo, vendorTxns: breakdown.length });
+  // ── 5. Update linked Donation ─────────────────────────────
+  if (slot.donationId) {
+    await Donation.updateOne(
+      { _id: slot.donationId },
+      { $set: {
+        approvalStatus: 'approved',
+        approvedBy:     p.approvedBy,
+        approvedAt:     new Date(),
+        status:         'Received',
+        isPending:      false,
+        received:       totalCost,
+        balance:        0,
+        mode:           'Cash',
+      }}
+    );
+  }
+
+  return ok({ receiptNo: slot.receiptNo, voucherNo, vendorTxns: breakdown.length });
 }
 
 async function rejectPooja(p) {
-  if (!p.id && !p.receiptNo) return err('id or receiptNo required');
-  const query = p.id ? { _id: p.id } : { receiptNo: p.receiptNo };
-  const don   = await Donation.findOne(query).lean();
-  if (!don)                              return err('Donation not found');
-  if (!don.isTempleFunded)               return err('Not a temple-funded pooja');
-  if (don.approvalStatus !== 'pending')  return err('Not in pending state');
+  if (!p.id && !p.receiptNo && !p.scheduleId) return err('id, receiptNo or scheduleId required');
 
-  await Donation.findOneAndUpdate(query, {
-    $set: {
+  let slot;
+  if (p.scheduleId) {
+    slot = await PoojaSchedule.findById(p.scheduleId).lean();
+  } else {
+    const donQuery = p.id ? { _id: p.id } : { receiptNo: p.receiptNo };
+    const don = await Donation.findOne(donQuery).lean();
+    if (!don) return err('Donation not found');
+    slot = don.poojaScheduleId
+      ? await PoojaSchedule.findById(don.poojaScheduleId).lean()
+      : await PoojaSchedule.findOne({ receiptNo: don.receiptNo }).lean();
+  }
+
+  if (!slot)                             return err('PoojaSchedule slot not found');
+  if (slot.approvalStatus !== 'pending') return err('Not in pending state');
+
+  // Update PoojaSchedule
+  await PoojaSchedule.updateOne(
+    { _id: slot._id },
+    { $set: {
+      status:         'unfunded',   // treat as unfunded so it can be re-filled
       approvalStatus: 'rejected',
       rejectedReason: p.reason || '',
-      status:         'Pending',
-    },
+    }}
+  );
+
+  // Update linked Donation
+  if (slot.donationId) {
+    await Donation.updateOne(
+      { _id: slot.donationId },
+      { $set: { approvalStatus: 'rejected', rejectedReason: p.reason || '' } }
+    );
+  }
+
+  return ok({ receiptNo: slot.receiptNo, scheduleId: slot._id.toString() });
+}
+
+/**
+ * markTempleFunded — mark an unfunded PoojaSchedule slot as temple-funded.
+ * No donor required. Creates Expense + VendorTransaction entries immediately.
+ *
+ * Params: scheduleId, approvedBy, variant (optional, overrides slot variant)
+ */
+async function markTempleFunded(p) {
+  if (!p.scheduleId) return err('scheduleId required');
+  if (!p.approvedBy) return err('approvedBy required');
+
+  const slot = await PoojaSchedule.findById(p.scheduleId).lean();
+  if (!slot) return err('PoojaSchedule slot not found');
+  if (slot.status === 'temple_funded')  return err('Already temple-funded');
+  if (slot.status === 'donor_funded')   return err('Slot has a donor — use approvePooja instead');
+
+  const poojaDateObj = new Date(slot.poojaDate);
+  const variant      = p.variant || slot.poojaVariant || 'Regular';
+  const variantKey   = variant === 'Special' ? 'special' : 'regular';
+  const cfg          = await AppConfig.get();
+  const breakdown    = cfg.poojaBreakdown?.[variantKey] || [];
+  const totalCost    = breakdown.reduce((s, l) => s + (l.amount || 0), 0);
+  const label        = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}`;
+  const year         = poojaDateObj.getFullYear();
+
+  // 1. Expense record
+  const expSeq    = await AppConfig.nextSeq('expense');
+  const voucherNo = `${RCP_YEAR}/EXP/${expSeq}`;
+  await Expense.create({
+    voucherNo,
+    date:        poojaDateObj,
+    vendor:      'Temple Fund',
+    description: label,
+    category:    'Puja & Rituals',
+    expType:     'Temple Operations',
+    amount:      totalCost,
+    mode:        'Cash',
+    paidBy:      p.approvedBy,
+    year,
   });
 
-  return ok({ receiptNo: don.receiptNo });
+  // 2. VendorTransaction credits
+  if (breakdown.length) {
+    const vtxns = breakdown.map(line => ({
+      vendorName:  line.vendorName,
+      vendorId:    line.vendorId || null,
+      date:        poojaDateObj,
+      description: label,
+      item:        line.item || '',
+      credit:      line.amount || 0,
+      debit:       0,
+      refType:     'pooja',
+      refId:       voucherNo,
+      poojaName:   slot.poojaType,
+      variant,
+      isSettled:   false,
+    }));
+    await VendorTransaction.insertMany(vtxns);
+  }
+
+  // 3. General ledger debit
+  try {
+    const txnSeq = await AppConfig.nextSeq('txn');
+    await Transaction.create({
+      txnNo:       `${RCP_YEAR}/TXN/${txnSeq}`,
+      date:        poojaDateObj,
+      type:        'debit',
+      category:    'Expense',
+      amount:      totalCost,
+      description: label,
+      party:       'Temple Fund',
+      mode:        'Cash',
+      refType:     'expense',
+      refId:       voucherNo,
+      recordedBy:  p.approvedBy,
+      year,
+    });
+  } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
+
+  // 4. Update PoojaSchedule slot
+  await PoojaSchedule.updateOne(
+    { _id: slot._id },
+    { $set: {
+      status:           'temple_funded',
+      isTempleFunded:   true,
+      approvalStatus:   'approved',
+      approvedBy:       p.approvedBy,
+      approvedAt:       new Date(),
+      poojaVariant:     variant,
+      expenseVoucherNo: voucherNo,
+    }}
+  );
+
+  return ok({ voucherNo, vendorTxns: breakdown.length, totalCost });
 }
 
 // ── Users ─────────────────────────────────────────────────
