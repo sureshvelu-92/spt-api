@@ -1663,26 +1663,10 @@ async function approvePooja(p) {
     year,
   });
 
-  // ── 2. VendorTransaction credits ──────────────────────────
-  if (breakdown.length) {
-    const vtxns = breakdown.map(line => ({
-      vendorName:  line.vendorName,
-      vendorId:    line.vendorId || null,
-      date:        poojaDateObj,
-      description: label,
-      item:        line.item || '',
-      credit:      line.amount || 0,
-      debit:       0,
-      refType:     'pooja',
-      refId:       voucherNo,
-      poojaName:   slot.poojaType,
-      variant,
-      isSettled:   false,
-    }));
-    await VendorTransaction.insertMany(vtxns);
-  }
+  // NOTE: VendorTransaction credits are created only when admin clicks "Pooja Done"
+  // (markPoojaComplete). Not at approval time. This prevents double-creation.
 
-  // ── 3. General ledger debit ───────────────────────────────
+  // ── 2. General ledger debit ───────────────────────────────
   try {
     const txnSeq = await AppConfig.nextSeq('txn');
     await Transaction.create({
@@ -1701,7 +1685,7 @@ async function approvePooja(p) {
     });
   } catch (e) { console.error('Ledger debit error (non-fatal):', e.message); }
 
-  // ── 4. Update PoojaSchedule slot ─────────────────────────
+  // ── 3. Update PoojaSchedule slot ─────────────────────────
   await PoojaSchedule.updateOne(
     { _id: slot._id },
     { $set: {
@@ -1729,7 +1713,7 @@ async function approvePooja(p) {
     );
   }
 
-  return ok({ receiptNo: slot.receiptNo, voucherNo, vendorTxns: breakdown.length });
+  return ok({ receiptNo: slot.receiptNo, voucherNo, vendorTxns: 0 });
 }
 
 async function rejectPooja(p) {
@@ -1773,7 +1757,8 @@ async function rejectPooja(p) {
 
 /**
  * markTempleFunded — mark an unfunded PoojaSchedule slot as temple-funded.
- * No donor required. Creates Expense + VendorTransaction entries immediately.
+ * No donor required. Creates Expense + Ledger debit entry.
+ * VendorTransaction entries are created only when admin clicks "Pooja Done" (markPoojaComplete).
  *
  * Params: scheduleId, approvedBy, variant (optional, overrides slot variant)
  */
@@ -1811,26 +1796,9 @@ async function markTempleFunded(p) {
     year,
   });
 
-  // 2. VendorTransaction credits
-  if (breakdown.length) {
-    const vtxns = breakdown.map(line => ({
-      vendorName:  line.vendorName,
-      vendorId:    line.vendorId || null,
-      date:        poojaDateObj,
-      description: label,
-      item:        line.item || '',
-      credit:      line.amount || 0,
-      debit:       0,
-      refType:     'pooja',
-      refId:       voucherNo,
-      poojaName:   slot.poojaType,
-      variant,
-      isSettled:   false,
-    }));
-    await VendorTransaction.insertMany(vtxns);
-  }
+  // NOTE: VendorTransaction credits are deferred to markPoojaComplete ("Pooja Done" button).
 
-  // 3. General ledger debit
+  // 2. General ledger debit
   try {
     const txnSeq = await AppConfig.nextSeq('txn');
     await Transaction.create({
@@ -1863,7 +1831,7 @@ async function markTempleFunded(p) {
     }}
   );
 
-  return ok({ voucherNo, vendorTxns: breakdown.length, totalCost });
+  return ok({ voucherNo, vendorTxns: 0, totalCost });
 }
 
 // ── Mark Pooja Complete (Pooja Done button) ───────────────
@@ -2150,16 +2118,18 @@ async function saveBudget(p) {
   const doc = await Budget.findOneAndUpdate(
     { festival: p.festival, year },
     { $set: { festival: p.festival, year, notes: p.notes || '', items, isFinalized: p.isFinalized === 'true' } },
-    { upsert: true, new: true }
+    { upsert: true, new: true, lean: true }
   );
-  return ok({ data: doc });
+  const d = doc.toObject ? doc.toObject() : doc;
+  const initial = d.items.reduce((s, i) => s + (i.initialBudget || 0), 0);
+  const revised = d.items.reduce((s, i) => s + (i.revisedBudget || 0), 0);
+  const advance = d.items.reduce((s, i) => s + (i.advance       || 0), 0);
+  return ok({ data: { ...d, totals: { initial, revised, advance, balance: revised - advance } } });
 }
 
-// POST ?action=addBudgetItem  body: { festival, year, description, category, initialBudget, revisedBudget, advance, notes }
+// POST ?action=addBudgetItem  body: { budgetId, description, category, initialBudget, revisedBudget, advance, notes }
 async function addBudgetItem(p) {
-  if (!p.festival) return err('festival required');
-  if (!p.year)     return err('year required');
-  const year = parseInt(p.year);
+  if (!p.budgetId) return err('budgetId required');
   const item = {
     description:   p.description   || '',
     category:      p.category      || 'Miscellaneous',
@@ -2168,18 +2138,21 @@ async function addBudgetItem(p) {
     advance:       parseFloat(p.advance        || 0),
     notes:         p.notes || '',
   };
-  const doc = await Budget.findOneAndUpdate(
-    { festival: p.festival, year },
-    { $push: { items: item }, $setOnInsert: { festival: p.festival, year } },
-    { upsert: true, new: true }
+  const doc = await Budget.findByIdAndUpdate(
+    p.budgetId,
+    { $push: { items: item } },
+    { new: true }
   );
-  return ok({ data: doc });
+  if (!doc) return err('Budget not found');
+  const initial = doc.items.reduce((s, i) => s + (i.initialBudget || 0), 0);
+  const revised = doc.items.reduce((s, i) => s + (i.revisedBudget || 0), 0);
+  const advance = doc.items.reduce((s, i) => s + (i.advance       || 0), 0);
+  return ok({ data: { ...doc.toObject(), totals: { initial, revised, advance, balance: revised - advance } } });
 }
 
-// POST ?action=updateBudgetItem  body: { festival, year, itemId, ...fields }
+// POST ?action=updateBudgetItem  body: { budgetId, itemId, ...fields }
 async function updateBudgetItem(p) {
-  if (!p.festival || !p.year || !p.itemId) return err('festival, year, itemId required');
-  const year = parseInt(p.year);
+  if (!p.budgetId || !p.itemId) return err('budgetId and itemId required');
   const update = {};
   if (p.description   !== undefined) update['items.$.description']   = p.description;
   if (p.category      !== undefined) update['items.$.category']      = p.category;
@@ -2188,18 +2161,17 @@ async function updateBudgetItem(p) {
   if (p.advance       !== undefined) update['items.$.advance']       = parseFloat(p.advance);
   if (p.notes         !== undefined) update['items.$.notes']         = p.notes;
   await Budget.updateOne(
-    { festival: p.festival, year, 'items._id': p.itemId },
+    { _id: p.budgetId, 'items._id': p.itemId },
     { $set: update }
   );
   return ok({ message: 'Updated' });
 }
 
-// POST ?action=deleteBudgetItem  body: { festival, year, itemId }
+// POST ?action=deleteBudgetItem  body: { budgetId, itemId }
 async function deleteBudgetItem(p) {
-  if (!p.festival || !p.year || !p.itemId) return err('festival, year, itemId required');
-  const year = parseInt(p.year);
+  if (!p.budgetId || !p.itemId) return err('budgetId and itemId required');
   await Budget.updateOne(
-    { festival: p.festival, year },
+    { _id: p.budgetId },
     { $pull: { items: { _id: p.itemId } } }
   );
   return ok({ message: 'Deleted' });
