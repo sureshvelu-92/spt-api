@@ -8,6 +8,7 @@ const VendorTransaction = require('../models/VendorTransaction');
 const Transaction       = require('../models/Transaction');
 const User              = require('../models/User');
 const PoojaSchedule     = require('../models/PoojaSchedule');
+const Budget            = require('../models/Budget');
 
 const TOKEN = process.env.API_TOKEN || 'SPTT@1985';
 const RCP_YEAR = '2026';
@@ -83,6 +84,12 @@ router.get('/', auth, async (req, res) => {
       case 'addUser':           return res.json(await addUser(p));
       case 'verifyPin':         return res.json(await verifyPin(p));
       case 'setPin':            return res.json(await setPin(p));
+
+      case 'getBudget':         return res.json(await getBudget(p));
+      case 'saveBudget':        return res.json(await saveBudget(p));
+      case 'addBudgetItem':     return res.json(await addBudgetItem(p));
+      case 'updateBudgetItem':  return res.json(await updateBudgetItem(p));
+      case 'deleteBudgetItem':  return res.json(await deleteBudgetItem(p));
 
       // ── One-time repair: fix VendorTransaction dates to use poojaDate ──
       case 'fixVendorTxnDates': return res.json(await fixVendorTxnDates());
@@ -2113,6 +2120,89 @@ async function fixVendorTxnDates() {
     updated++;
   }
   return ok({ checked: seen.size, updated, message: `Updated ${updated} group(s)` });
+}
+
+// ── Budget ────────────────────────────────────────────────
+
+// GET  ?action=getBudget&festival=Aadi Festival&year=2026
+// GET  ?action=getBudget&year=2026  → all festivals for year
+async function getBudget(p) {
+  const query = {};
+  if (p.year)     query.year     = parseInt(p.year);
+  if (p.festival) query.festival = p.festival;
+  const docs = await Budget.find(query).sort({ year: -1, festival: 1 }).lean();
+  const data = docs.map(d => {
+    const initial  = d.items.reduce((s, i) => s + (i.initialBudget  || 0), 0);
+    const revised  = d.items.reduce((s, i) => s + (i.revisedBudget  || 0), 0);
+    const advance  = d.items.reduce((s, i) => s + (i.advance        || 0), 0);
+    return { ...d, totals: { initial, revised, advance, balance: revised - advance } };
+  });
+  return ok({ data });
+}
+
+// POST ?action=saveBudget  body: { festival, year, notes, items[] }
+// Upserts the entire budget document for a festival+year
+async function saveBudget(p) {
+  if (!p.festival) return err('festival required');
+  if (!p.year)     return err('year required');
+  const year  = parseInt(p.year);
+  const items = p.items ? JSON.parse(p.items) : [];
+  const doc = await Budget.findOneAndUpdate(
+    { festival: p.festival, year },
+    { $set: { festival: p.festival, year, notes: p.notes || '', items, isFinalized: p.isFinalized === 'true' } },
+    { upsert: true, new: true }
+  );
+  return ok({ data: doc });
+}
+
+// POST ?action=addBudgetItem  body: { festival, year, description, category, initialBudget, revisedBudget, advance, notes }
+async function addBudgetItem(p) {
+  if (!p.festival) return err('festival required');
+  if (!p.year)     return err('year required');
+  const year = parseInt(p.year);
+  const item = {
+    description:   p.description   || '',
+    category:      p.category      || 'Miscellaneous',
+    initialBudget: parseFloat(p.initialBudget  || 0),
+    revisedBudget: parseFloat(p.revisedBudget  || p.initialBudget || 0),
+    advance:       parseFloat(p.advance        || 0),
+    notes:         p.notes || '',
+  };
+  const doc = await Budget.findOneAndUpdate(
+    { festival: p.festival, year },
+    { $push: { items: item }, $setOnInsert: { festival: p.festival, year } },
+    { upsert: true, new: true }
+  );
+  return ok({ data: doc });
+}
+
+// POST ?action=updateBudgetItem  body: { festival, year, itemId, ...fields }
+async function updateBudgetItem(p) {
+  if (!p.festival || !p.year || !p.itemId) return err('festival, year, itemId required');
+  const year = parseInt(p.year);
+  const update = {};
+  if (p.description   !== undefined) update['items.$.description']   = p.description;
+  if (p.category      !== undefined) update['items.$.category']      = p.category;
+  if (p.initialBudget !== undefined) update['items.$.initialBudget'] = parseFloat(p.initialBudget);
+  if (p.revisedBudget !== undefined) update['items.$.revisedBudget'] = parseFloat(p.revisedBudget);
+  if (p.advance       !== undefined) update['items.$.advance']       = parseFloat(p.advance);
+  if (p.notes         !== undefined) update['items.$.notes']         = p.notes;
+  await Budget.updateOne(
+    { festival: p.festival, year, 'items._id': p.itemId },
+    { $set: update }
+  );
+  return ok({ message: 'Updated' });
+}
+
+// POST ?action=deleteBudgetItem  body: { festival, year, itemId }
+async function deleteBudgetItem(p) {
+  if (!p.festival || !p.year || !p.itemId) return err('festival, year, itemId required');
+  const year = parseInt(p.year);
+  await Budget.updateOne(
+    { festival: p.festival, year },
+    { $pull: { items: { _id: p.itemId } } }
+  );
+  return ok({ message: 'Deleted' });
 }
 
 module.exports = router;
