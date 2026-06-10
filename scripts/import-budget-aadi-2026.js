@@ -11,7 +11,9 @@
  * Add --dry-run to preview without writing to DB.
  */
 
-require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
+const path = require('path');
+// Load .env relative to this script — works regardless of cwd
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const mongoose = require('mongoose');
 const Budget   = require('../models/Budget');
 
@@ -67,7 +69,12 @@ if (DRY_RUN) {
 }
 
 async function run() {
-  await mongoose.connect(process.env.MONGODB_URI);
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    console.error('❌ MONGODB_URI not set. Run: MONGODB_URI="<your-uri>" node scripts/import-budget-aadi-2026.js');
+    process.exit(1);
+  }
+  await mongoose.connect(uri);
   console.log('Connected to MongoDB');
 
   // Delete existing doc for this festival+year and replace with fresh data
