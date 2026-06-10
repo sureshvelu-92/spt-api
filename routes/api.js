@@ -2188,9 +2188,13 @@ const {
   verifyAuthenticationResponse,
 } = require('@simplewebauthn/server');
 
-const RP_NAME = 'Sri Ponniamman Temple Trust';
-const RP_ID   = process.env.WEBAUTHN_RP_ID  || 'sureshvelu-92.github.io';
-const ORIGIN  = process.env.WEBAUTHN_ORIGIN || 'https://sureshvelu-92.github.io';
+const RP_NAME  = 'Sri Ponniamman Temple Trust';
+const RP_ID    = process.env.WEBAUTHN_RP_ID  || 'sureshvelu-92.github.io';
+// Accept both GitHub Pages and localhost dev origins
+const ORIGINS  = process.env.WEBAUTHN_ORIGIN
+  ? [process.env.WEBAUTHN_ORIGIN]
+  : ['https://sureshvelu-92.github.io', 'http://localhost:3000', 'http://localhost:3001'];
+const ORIGIN   = ORIGINS[0]; // kept for backward compat
 
 // GET ?action=webauthnRegisterOptions&name=<userName>
 async function webauthnRegisterOptions(p) {
@@ -2232,9 +2236,9 @@ async function webauthnRegisterVerify(p) {
     verification = await verifyRegistrationResponse({
       response:               body,
       expectedChallenge:      user.currentChallenge,
-      expectedOrigin:         ORIGIN,
+      expectedOrigin:         ORIGINS,
       expectedRPID:           RP_ID,
-      requireUserVerification: true,  // enforces biometric was actually used
+      requireUserVerification: true,
     });
   } catch (e) {
     return err(e.message || 'Verification error');
@@ -2290,9 +2294,9 @@ async function webauthnAuthVerify(p) {
     verification = await verifyAuthenticationResponse({
       response:               body,
       expectedChallenge:      user.currentChallenge,
-      expectedOrigin:         ORIGIN,
+      expectedOrigin:         ORIGINS,
       expectedRPID:           RP_ID,
-      requireUserVerification: true,  // enforces biometric was used during login
+      requireUserVerification: true,
       credential: {
         id:         credential.credentialID,
         publicKey:  Buffer.from(credential.credentialPublicKey, 'base64url'),
