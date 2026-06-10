@@ -111,10 +111,11 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// Also support POST
-router.post('/', auth, (req, res) => {
+// Also support POST — merge body into query then re-dispatch as GET
+router.post('/', auth, (req, res, next) => {
   req.query = { ...req.query, ...req.body };
-  return router.handle(req, res);
+  req.method = 'GET';
+  router.handle(req, res, next);
 });
 
 // ── Handlers ─────────────────────────────────────────────
@@ -1554,12 +1555,7 @@ async function getPoojaSchedule(p) {
     }
   }
 
-  // ── Enrich with vendor transaction presence ───────────────
-  const receiptNos = dbRows.filter(r => r.receiptNo).map(r => r.receiptNo);
-  const vtxnRefs   = receiptNos.length
-    ? await VendorTransaction.distinct('refId', { refId: { $in: receiptNos }, refType: 'pooja' })
-    : [];
-  const vtxnSet = new Set(vtxnRefs);
+  // hasVendorTxn is written directly to PoojaSchedule by markPoojaComplete — read it from there.
 
   // ── Also enrich with donor name from Donation ────────────
   const donIds = dbRows.filter(r => r.donationId).map(r => r.donationId);
@@ -1583,9 +1579,7 @@ async function getPoojaSchedule(p) {
       receiptNo:      row.receiptNo    || null,
       donationId:     row.donationId?.toString() || null,
       approvalStatus: row.approvalStatus || null,
-      hasVendorTxn:   row.receiptNo ? vtxnSet.has(row.receiptNo)
-                    : row.expenseVoucherNo ? vtxnSet.has(row.expenseVoucherNo)
-                    : false,
+      hasVendorTxn:   !!row.hasVendorTxn,
     };
   });
 
