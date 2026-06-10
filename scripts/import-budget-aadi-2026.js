@@ -67,7 +67,7 @@ if (DRY_RUN) {
 }
 
 async function run() {
-  await mongoose.connect(process.env.MONGO_URI);
+  await mongoose.connect(process.env.MONGODB_URI);
   console.log('Connected to MongoDB');
 
   // Delete existing doc for this festival+year and replace with fresh data
