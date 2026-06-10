@@ -2230,10 +2230,11 @@ async function webauthnRegisterVerify(p) {
   let verification;
   try {
     verification = await verifyRegistrationResponse({
-      response:          body,
-      expectedChallenge: user.currentChallenge,
-      expectedOrigin:    ORIGIN,
-      expectedRPID:      RP_ID,
+      response:               body,
+      expectedChallenge:      user.currentChallenge,
+      expectedOrigin:         ORIGIN,
+      expectedRPID:           RP_ID,
+      requireUserVerification: true,  // enforces biometric was actually used
     });
   } catch (e) {
     return err(e.message || 'Verification error');
@@ -2287,10 +2288,11 @@ async function webauthnAuthVerify(p) {
   let verification;
   try {
     verification = await verifyAuthenticationResponse({
-      response:          body,
-      expectedChallenge: user.currentChallenge,
-      expectedOrigin:    ORIGIN,
-      expectedRPID:      RP_ID,
+      response:               body,
+      expectedChallenge:      user.currentChallenge,
+      expectedOrigin:         ORIGIN,
+      expectedRPID:           RP_ID,
+      requireUserVerification: true,  // enforces biometric was used during login
       credential: {
         id:         credential.credentialID,
         publicKey:  Buffer.from(credential.credentialPublicKey, 'base64url'),
