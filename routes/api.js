@@ -2204,8 +2204,9 @@ async function webauthnRegisterOptions(p) {
     userName: user.name,
     attestationType: 'none',
     authenticatorSelection: {
-      residentKey:      'preferred',
-      userVerification: 'preferred',
+      authenticatorAttachment: 'platform',   // force device biometric (Android fingerprint / iOS Face ID / Touch ID)
+      residentKey:             'preferred',
+      userVerification:        'required',   // biometric must verify the user
     },
     excludeCredentials: user.webAuthnCredentials.map(c => ({
       id:         c.credentialID,
@@ -2261,7 +2262,7 @@ async function webauthnAuthOptions(p) {
   if (!user.webAuthnCredentials.length) return err('No biometric registered for this user');
   const options = await generateAuthenticationOptions({
     rpID:             RP_ID,
-    userVerification: 'preferred',
+    userVerification: 'required',   // forces biometric on mobile
     allowCredentials: user.webAuthnCredentials.map(c => ({
       id:         c.credentialID,
       type:       'public-key',
