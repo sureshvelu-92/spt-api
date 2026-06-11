@@ -2232,7 +2232,7 @@ async function webauthnRegisterOptions(p) {
     authenticatorSelection: {
       authenticatorAttachment: 'platform',   // force device biometric (Android fingerprint / iOS Face ID / Touch ID)
       residentKey:             'preferred',
-      userVerification:        'required',   // biometric must verify the user
+      userVerification:        'preferred',  // request biometric but don't hard-fail if device skips UV flag
     },
     excludeCredentials: user.webAuthnCredentials.map(c => ({
       id:         c.credentialID,
@@ -2260,7 +2260,7 @@ async function webauthnRegisterVerify(p) {
       expectedChallenge:      user.currentChallenge,
       expectedOrigin:         ORIGINS,
       expectedRPID:           RP_ID,
-      requireUserVerification: true,
+      requireUserVerification: false,  // Android/iOS handle UV during the prompt; don't double-check
     });
   } catch (e) {
     return err(e.message || 'Verification error');
