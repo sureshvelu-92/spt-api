@@ -46,7 +46,7 @@ router.get('/', authMiddleware, async (req, res) => {
 
       // ── Expenses ───────────────────────────────────────
       case 'addExpense':          return res.json(await expenses.addExpense(p));
-      case 'getExpenses':         return res.json(await expenses.getExpenses());
+      case 'getExpenses':         return res.json(await expenses.getExpenses(p));
       case 'getYearlyExpenses':   return res.json(await expenses.getYearlyExpenses(p));
       case 'getYearlyDonations':  return res.json(await donations.getYearlyDonations(p));
 

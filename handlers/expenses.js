@@ -44,8 +44,11 @@ async function addExpense(p) {
   return ok({ voucherNo, seq });
 }
 
-async function getExpenses() {
-  const rows = await Expense.find().sort({ date: -1 }).lean();
+async function getExpenses(p = {}) {
+  const filter = {};
+  if (p.expType) filter.expType = p.expType;
+  if (p.year)    { const y = parseInt(p.year); filter.date = { $gte: new Date(Date.UTC(y, 0, 1)), $lt: new Date(Date.UTC(y + 1, 0, 1)) }; }
+  const rows = await Expense.find(filter).sort({ date: -1 }).lean();
   return ok({ data: rows.map(mapExpense) });
 }
 

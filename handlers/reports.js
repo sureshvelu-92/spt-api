@@ -394,9 +394,15 @@ async function getLedger(p) {
  *   search   partial match on party/description/refNo
  */
 async function getCombinedLedger(p) {
-  const year = parseInt(p.year || new Date().getFullYear());
-  const from = new Date(Date.UTC(year, 0, 1));
-  const to   = new Date(Date.UTC(year + 1, 0, 1));
+  let from, to;
+  if (p.from && p.to) {
+    from = new Date(p.from);
+    to   = new Date(p.to);
+  } else {
+    const year = parseInt(p.year || new Date().getFullYear());
+    from = new Date(Date.UTC(year, 0, 1));
+    to   = new Date(Date.UTC(year + 1, 0, 1));
+  }
 
   // ── 1. Donations (received > 0) ──────────────────────────
   const donations = await Donation.find({
@@ -488,13 +494,28 @@ async function getCombinedLedger(p) {
   const totalDebit  = expRows.reduce((s, r) => s + r.amount, 0)
     + txnRows.filter(r => r.type === 'debit').reduce((s, r) => s + r.amount, 0);
 
+  // ── Opening balance: sum of all transactions before `from` ─
+  const [donBefore, expBefore, txnBefore] = await Promise.all([
+    Donation.find({ date: { $lt: from }, received: { $gt: 0 } }).lean(),
+    Expense.find({ date: { $lt: from } }).lean(),
+    Transaction.find({ date: { $lt: from }, refType: { $in: ['manual', 'vendor_settlement'] } }).lean(),
+  ]);
+  const openingBalance =
+    donBefore.reduce((s, d) => s + (d.received || 0), 0) +
+    txnBefore.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0) -
+    expBefore.reduce((s, e) => s + (e.amount || 0), 0) -
+    txnBefore.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0);
+
   return ok({
-    year,
+    from:           from.toISOString(),
+    to:             to.toISOString(),
+    openingBalance,
     totalCredit,
     totalDebit,
-    netBalance: totalCredit - totalDebit,
-    count:      reversed.length,
-    data:       reversed,
+    closingBalance: openingBalance + totalCredit - totalDebit,
+    netBalance:     totalCredit - totalDebit,
+    count:          reversed.length,
+    data:           reversed,
   });
 }
 

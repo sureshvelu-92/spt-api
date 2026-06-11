@@ -147,14 +147,17 @@ async function addInKind(p) {
 }
 
 async function getReceipts(p = {}) {
-  const limit = parseInt(p.limit) || 0;
-  const page  = parseInt(p.page)  || 1;
-  const skip  = limit ? (page - 1) * limit : 0;
-  const q     = Donation.find().sort({ date: -1 });
+  const limit   = parseInt(p.limit)  || 0;
+  const page    = parseInt(p.page)   || 1;
+  const skip    = limit ? (page - 1) * limit : 0;
+  const filter  = {};
+  if (p.donType) filter.donType = p.donType;
+  if (p.year)    { const y = parseInt(p.year); filter.date = { $gte: new Date(Date.UTC(y, 0, 1)), $lt: new Date(Date.UTC(y + 1, 0, 1)) }; }
+  const q     = Donation.find(filter).sort({ date: -1 });
   if (limit) q.skip(skip).limit(limit);
   const [rows, total] = await Promise.all([
     q.lean(),
-    limit ? Donation.countDocuments() : Promise.resolve(0),
+    limit ? Donation.countDocuments(filter) : Promise.resolve(0),
   ]);
   return ok({ data: rows.map(mapDonation), total: total || rows.length, page, limit });
 }
