@@ -14,7 +14,7 @@ async function getMonthlyReport(p) {
   const from = new Date(Date.UTC(year, month - 1, 1));
   const to   = new Date(Date.UTC(year, month, 1));
 
-  const [donAgg, expAgg, donRows, expRows, otherIncAgg, cumulativePendingAgg, prevDonAgg, prevExpAgg, prevOtherAgg] = await Promise.all([
+  const [donAgg, expAgg, donRows, expRows, otherIncAgg, otherDebitAgg, cumulativePendingAgg, prevDonAgg, prevExpAgg, prevOtherCreditAgg, prevOtherDebitAgg] = await Promise.all([
     // Donation summary
     Donation.aggregate([
       { $match: { date: { $gte: from, $lt: to } } },
@@ -42,10 +42,15 @@ async function getMonthlyReport(p) {
     Donation.find({ date: { $gte: from, $lt: to } }).sort({ date: 1 }).lean(),
     // Expense detail rows
     Expense.find({ date: { $gte: from, $lt: to } }).sort({ date: 1 }).lean(),
-    // Other income (manual Transaction credits: interest, asset sale, scrap, etc.)
+    // Other income this month (manual + vendor_settlement credits)
     Transaction.aggregate([
-      { $match: { date: { $gte: from, $lt: to }, type: 'credit', refType: { $in: ['manual'] } } },
+      { $match: { date: { $gte: from, $lt: to }, type: 'credit', refType: { $in: ['manual', 'vendor_settlement'] } } },
       { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+    // Other debits this month (vendor settlements, manual debits) — must match Cashbook
+    Transaction.aggregate([
+      { $match: { date: { $gte: from, $lt: to }, type: 'debit', refType: { $in: ['manual', 'vendor_settlement'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
     // ALL-TIME cumulative pending — sum of every unpaid donation balance across all months
     Donation.aggregate([
@@ -62,9 +67,14 @@ async function getMonthlyReport(p) {
       { $match: { date: { $lt: from } } },
       { $group: { _id: null, spent: { $sum: '$amount' } } },
     ]),
-    // Opening balance — all manual other income BEFORE this month
+    // Opening balance — all Transaction credits BEFORE this month
     Transaction.aggregate([
-      { $match: { date: { $lt: from }, type: 'credit', refType: { $in: ['manual'] } } },
+      { $match: { date: { $lt: from }, type: 'credit', refType: { $in: ['manual', 'vendor_settlement'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    // Opening balance — all Transaction debits BEFORE this month (vendor settlements, etc.)
+    Transaction.aggregate([
+      { $match: { date: { $lt: from }, type: 'debit', refType: { $in: ['manual', 'vendor_settlement'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
   ]);
@@ -72,8 +82,14 @@ async function getMonthlyReport(p) {
   const dSumRaw    = donAgg[0] || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0, byType: [] };
   const eSumRaw    = expAgg[0] || { totalSpent: 0, count: 0, byCategory: [], byVendor: [] };
   const cumPending = (cumulativePendingAgg[0] || { total: 0, count: 0 });
+  const otherDebitTotal = otherDebitAgg[0]?.total ?? 0;
 
-  const openingBalance = (prevDonAgg[0]?.received ?? 0) + (prevOtherAgg[0]?.total ?? 0) - (prevExpAgg[0]?.spent ?? 0);
+  // Opening balance matches getCombinedLedger: donations + txn credits − expenses − txn debits
+  const openingBalance =
+    (prevDonAgg[0]?.received  ?? 0) +
+    (prevOtherCreditAgg[0]?.total ?? 0) -
+    (prevExpAgg[0]?.spent     ?? 0) -
+    (prevOtherDebitAgg[0]?.total  ?? 0);
 
   // Summarise byType
   const donByType = {};
@@ -104,7 +120,9 @@ async function getMonthlyReport(p) {
     otherIncomeTotal += r.total;
   });
 
-  const totalIncome = dSumRaw.totalReceived + otherIncomeTotal;
+  const totalIncome  = dSumRaw.totalReceived + otherIncomeTotal;
+  // totalOutflow = expenses + vendor settlement / manual debits — matches Cashbook
+  const totalOutflow = eSumRaw.totalSpent + otherDebitTotal;
 
   return ok({
     period:  `${MONTH_NAMES[month]} ${year}`,
@@ -129,9 +147,9 @@ async function getMonthlyReport(p) {
       rows:        expRows.map(mapExpense),
     },
     totalIncome,
-    netBalance:             totalIncome - eSumRaw.totalSpent,
+    netBalance:             totalIncome - totalOutflow,
     openingBalance,
-    closingBalance:         openingBalance + totalIncome - eSumRaw.totalSpent,
+    closingBalance:         openingBalance + totalIncome - totalOutflow,
     cumulativePending:      cumPending.total,
     cumulativePendingCount: cumPending.count,
   });
@@ -277,7 +295,7 @@ async function getYearlyReport(p) {
 // ── Overall (all-time) Report ─────────────────────────────
 // ?action=getOverallReport
 async function getOverallReport() {
-  const [donAgg, expAgg, donByType, expByCat, topVendors, byYear, otherInc, pendingDon] = await Promise.all([
+  const [donAgg, expAgg, donByType, expByCat, topVendors, byYear, otherInc, otherDebit, pendingDon] = await Promise.all([
     // All-time donation totals
     Donation.aggregate([
       { $group: {
@@ -313,9 +331,14 @@ async function getOverallReport() {
       { $group: { _id: '$year', received: { $sum: '$received' }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]),
-    // All-time other income
+    // All-time other income (credits: manual + vendor_settlement)
     Transaction.aggregate([
-      { $match: { type: 'credit', refType: { $in: ['manual'] } } },
+      { $match: { type: 'credit', refType: { $in: ['manual', 'vendor_settlement'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    // All-time Transaction debits (vendor settlements + manual debits) — matches Cashbook
+    Transaction.aggregate([
+      { $match: { type: 'debit', refType: { $in: ['manual', 'vendor_settlement'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]),
     // Pending donations count + amount
@@ -325,11 +348,13 @@ async function getOverallReport() {
     ]),
   ]);
 
-  const d          = donAgg[0]  || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0 };
-  const e          = expAgg[0]  || { totalSpent: 0, count: 0 };
-  const otherTotal = otherInc[0]?.total ?? 0;
-  const pending    = pendingDon[0] || { totalPending: 0, count: 0 };
-  const totalIncome = d.totalReceived + otherTotal;
+  const d               = donAgg[0]  || { totalPledged: 0, totalReceived: 0, totalBalance: 0, count: 0 };
+  const e               = expAgg[0]  || { totalSpent: 0, count: 0 };
+  const otherTotal      = otherInc[0]?.total   ?? 0;
+  const otherDebitTotal = otherDebit[0]?.total  ?? 0;
+  const pending         = pendingDon[0] || { totalPending: 0, count: 0 };
+  const totalIncome     = d.totalReceived + otherTotal;
+  const totalOutflow    = e.totalSpent + otherDebitTotal;
 
   return ok({
     summary: {
@@ -339,7 +364,7 @@ async function getOverallReport() {
       totalIncome,
       totalBalance:     d.totalBalance,
       totalSpent:       e.totalSpent,
-      netBalance:       totalIncome - e.totalSpent,
+      netBalance:       totalIncome - totalOutflow,
       donCount:         d.count,
       expCount:         e.count,
       pendingAmount:    pending.totalPending,
