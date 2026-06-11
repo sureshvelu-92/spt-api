@@ -48,6 +48,14 @@ async function getExpenses() {
   return ok({ data: rows.map(mapExpense) });
 }
 
+async function getYearlyExpenses(p = {}) {
+  const year  = parseInt(p.year) || new Date().getFullYear();
+  const start = new Date(Date.UTC(year, 0, 1));
+  const end   = new Date(Date.UTC(year + 1, 0, 1));
+  const rows  = await Expense.find({ date: { $gte: start, $lt: end } }).sort({ date: 1 }).lean();
+  return ok({ data: rows.map(mapExpense), year, count: rows.length });
+}
+
 function mapExpense(d) {
   return {
     '#':          d.voucherNo,
@@ -67,5 +75,6 @@ function mapExpense(d) {
 module.exports = {
   addExpense,
   getExpenses,
+  getYearlyExpenses,
   mapExpense,
 };

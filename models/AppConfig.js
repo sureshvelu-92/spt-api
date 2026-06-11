@@ -10,7 +10,7 @@ const appConfigSchema = new mongoose.Schema({
   templeBranch:   { type: String, default: '39, Ramakrishna Mutt Road, Ulsoor, Bangalore – 560 008' },
   templePAN:      { type: String, default: 'AAYTS1092E' },
   templeRegNo:    { type: String, default: '64/2013' },
-  rcpYear:        { type: String, default: '2026' },
+  rcpYear:        { type: String, default: () => String(new Date().getFullYear()) },
 
   // ── Sequences (auto-increment counters, no separate collection) ─
   donationSeq:    { type: Number, default: 0 },
@@ -127,6 +127,14 @@ const appConfigSchema = new mongoose.Schema({
 appConfigSchema.statics.get = async function () {
   let doc = await this.findById('config');
   if (!doc) doc = await this.create({ _id: 'config' });
+
+  // Auto-advance rcpYear when a new calendar year begins
+  const currentYear = String(new Date().getFullYear());
+  if (!doc.rcpYear || doc.rcpYear < currentYear) {
+    doc.rcpYear = currentYear;
+    await doc.save();
+  }
+
   return doc;
 };
 

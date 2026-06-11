@@ -203,6 +203,14 @@ async function updateReceived(p) {
   return ok({ receiptNo: doc.receiptNo, status: doc.status });
 }
 
+async function getYearlyDonations(p = {}) {
+  const year = parseInt(p.year) || new Date().getFullYear();
+  const start = new Date(Date.UTC(year, 0, 1));
+  const end   = new Date(Date.UTC(year + 1, 0, 1));
+  const rows  = await Donation.find({ date: { $gte: start, $lt: end } }).sort({ date: 1 }).lean();
+  return ok({ data: rows.map(mapDonation), year, count: rows.length });
+}
+
 async function getAllData() {
   const Expense = require('../models/Expense');
   const [donations, inkind, expenses] = await Promise.all([
@@ -276,6 +284,7 @@ module.exports = {
   addDonation,
   addInKind,
   getReceipts,
+  getYearlyDonations,
   getRecentDonations,
   getInKind,
   getLastSeq,
