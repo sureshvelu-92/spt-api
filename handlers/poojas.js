@@ -7,6 +7,10 @@ const VendorTransaction = require('../models/VendorTransaction');
 const Transaction       = require('../models/Transaction');
 const PoojaSchedule     = require('../models/PoojaSchedule');
 const { ok, err, createLedgerEntry, fmtDate, RCP_YEAR } = require('../utils/helpers');
+const {
+  POOJA_TYPES,
+  EXP_TYPE_TEMPLE_OPS,
+} = require('../lib/constants');
 
 // ── Lunar / Calendar helpers ──────────────────────────────
 
@@ -90,7 +94,7 @@ async function addPooja(p) {
     vendor:      'Temple Fund',
     description: label,
     category:    'Puja & Rituals',
-    expType:     'Temple Operations',
+    expType:     EXP_TYPE_TEMPLE_OPS,
     amount:      totalCost,
     mode:        p.mode || 'Cash',
     paidBy:      p.recordedBy || '',
@@ -574,7 +578,7 @@ async function markPoojaComplete(p) {
 
     await Expense.create({
       voucherNo, date: poojaDateObj, vendor: 'Temple Fund',
-      description: label, category: 'Puja & Rituals', expType: 'Temple Operations',
+      description: label, category: 'Puja & Rituals', expType: EXP_TYPE_TEMPLE_OPS,
       amount: totalCost, mode: 'Cash', paidBy: p.doneBy, year,
     });
 
@@ -610,7 +614,7 @@ async function markPoojaComplete(p) {
       const label  = `${slot.poojaType} (${variant}) — Temple Fund | ${slot.dayType}${personSuffix}`;
       await Expense.create({
         voucherNo, date: poojaDateObj, vendor: 'Temple Fund',
-        description: label, category: 'Puja & Rituals', expType: 'Temple Operations',
+        description: label, category: 'Puja & Rituals', expType: EXP_TYPE_TEMPLE_OPS,
         amount: totalCost, mode: 'Cash', paidBy: p.doneBy, year,
       });
       await PoojaSchedule.updateOne({ _id: slot._id }, { $set: {
@@ -683,10 +687,6 @@ async function setPoojaDate(p) {
  * Safe to run multiple times (idempotent — only touches null records).
  */
 async function backfillPoojaDates() {
-  const POOJA_TYPES = [
-    'Weekly Pooja', 'Amavasai Pooja', 'Pournami Pooja',
-    'Birthday Pooja', 'Anniversary Pooja',
-  ];
 
   // Find all pooja donations with no poojaDate set
   const donations = await Donation.find({

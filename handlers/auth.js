@@ -2,9 +2,10 @@
 
 const User = require('../models/User');
 const { ok, err } = require('../utils/helpers');
+const { WEBAUTHN_RP_NAME, WEBAUTHN_RP_ID_DEFAULT } = require('../lib/constants');
 
-const RP_NAME  = 'Sri Ponniamman Temple Trust';
-const RP_ID    = process.env.WEBAUTHN_RP_ID  || 'sureshvelu-92.github.io';
+const RP_NAME  = WEBAUTHN_RP_NAME;
+const RP_ID    = process.env.WEBAUTHN_RP_ID || WEBAUTHN_RP_ID_DEFAULT;
 // Accept both GitHub Pages and localhost dev origins
 const ORIGINS  = process.env.WEBAUTHN_ORIGIN
   ? [process.env.WEBAUTHN_ORIGIN]

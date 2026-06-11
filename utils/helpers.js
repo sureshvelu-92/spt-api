@@ -1,9 +1,11 @@
 'use strict';
 
-const AppConfig = require('../models/AppConfig');
+const AppConfig   = require('../models/AppConfig');
 const Transaction = require('../models/Transaction');
+const { RCP_YEAR: _RCP_YEAR } = require('../lib/constants');
 
-const RCP_YEAR = '2026';
+// Re-export so existing callers that require RCP_YEAR from helpers still work.
+const RCP_YEAR = _RCP_YEAR;
 
 // ── Response wrappers ─────────────────────────────────────
 const ok  = (data) => ({ status: 'ok',    ...data });

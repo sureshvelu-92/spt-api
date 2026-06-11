@@ -5,6 +5,7 @@ const VendorTransaction = require('../models/VendorTransaction');
 const Expense           = require('../models/Expense');
 const AppConfig         = require('../models/AppConfig');
 const { ok, err, fmtDate, RCP_YEAR } = require('../utils/helpers');
+const { EXP_TYPE_TEMPLE_OPS } = require('../lib/constants');
 
 async function getVendors() {
   const vendors = await Vendor.find({ isActive: true }).sort({ name: 1 }).lean();
@@ -107,7 +108,7 @@ async function settleVendors(p) {
     mode:        p.mode || 'Cash',
     paidBy:      settledBy,
     remarks:     p.remarks || '',
-    expType:     'Temple Operations',
+    expType:     EXP_TYPE_TEMPLE_OPS,
   });
 
   // 2. Mark all unsettled pooja credits as settled

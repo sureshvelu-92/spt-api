@@ -7,6 +7,7 @@ const AppConfig     = require('../models/AppConfig');
 const Transaction   = require('../models/Transaction');
 const PoojaSchedule = require('../models/PoojaSchedule');
 const { ok, err, createLedgerEntry, fmtDate, isPoojaType, RCP_YEAR } = require('../utils/helpers');
+const { EXP_TYPE_AADI } = require('../lib/constants');
 
 async function addDonation(p) {
   const year = new Date().getFullYear();
@@ -34,7 +35,7 @@ async function addDonation(p) {
     receivedById: p.receivedById ? mongoose.Types.ObjectId.isValid(p.receivedById) ? p.receivedById : null : null,
     notes: p.notes || p.purpose || '',
     status,
-    donType: p.donType || 'Aadi Festival',
+    donType: p.donType || EXP_TYPE_AADI,
     personName: p.personName || '',
     poojaType:    p.poojaType    || '',
     poojaVariant: p.poojaVariant || '',

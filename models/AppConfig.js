@@ -1,15 +1,16 @@
 const mongoose = require('mongoose');
+const { TEMPLE_NAME, TEMPLE_PAN, TEMPLE_REG_NO, TEMPLE_YT_URL, API_TOKEN_DEFAULT } = require('../lib/constants');
 
 // Singleton document — always upsert on _id: 'config'
 const appConfigSchema = new mongoose.Schema({
   _id:            { type: String, default: 'config' },
 
   // ── Temple identity ──────────────────────────────────────
-  templeName:     { type: String, default: 'Sri Ponniamman Temple Trust (R)' },
+  templeName:     { type: String, default: TEMPLE_NAME },
   templeAddress:  { type: String, default: '54, Bhajanai Koil Street, Gundaleri Village, Ranipet Dt, Tamil Nadu' },
   templeBranch:   { type: String, default: '39, Ramakrishna Mutt Road, Ulsoor, Bangalore – 560 008' },
-  templePAN:      { type: String, default: 'AAYTS1092E' },
-  templeRegNo:    { type: String, default: '64/2013' },
+  templePAN:      { type: String, default: TEMPLE_PAN },
+  templeRegNo:    { type: String, default: TEMPLE_REG_NO },
   rcpYear:        { type: String, default: () => String(new Date().getFullYear()) },
 
   // ── Sequences (auto-increment counters, no separate collection) ─
@@ -19,8 +20,8 @@ const appConfigSchema = new mongoose.Schema({
   txnSeq:         { type: Number, default: 0 },
 
   // ── Auth & integrations ──────────────────────────────────
-  apiToken:       { type: String, default: 'SPTT@1985' },
-  youtubeChannel: { type: String, default: 'https://youtube.com/@SriPonniammanTempleGundaleri' },
+  apiToken:       { type: String, default: API_TOKEN_DEFAULT },
+  youtubeChannel: { type: String, default: TEMPLE_YT_URL },
   whatsappFooter: { type: String, default: '' },
 
   // ── Volunteers (receivers / payers) ─────────────────────

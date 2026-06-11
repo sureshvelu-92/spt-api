@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 const { ok, err } = require('../utils/helpers');
+const { API_TOKEN_DEFAULT } = require('../lib/constants');
 
 // ── Domain handlers ───────────────────────────────────────
 const donations = require('../handlers/donations');
@@ -12,7 +13,7 @@ const reports   = require('../handlers/reports');
 const auth      = require('../handlers/auth');
 const finance   = require('../handlers/finance');
 
-const TOKEN = process.env.API_TOKEN || 'SPTT@1985';
+const TOKEN = process.env.API_TOKEN || API_TOKEN_DEFAULT;
 
 // ── Auth middleware ───────────────────────────────────────
 function authMiddleware(req, res, next) {

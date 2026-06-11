@@ -4,6 +4,7 @@ const mongoose    = require('mongoose');
 const Expense     = require('../models/Expense');
 const AppConfig   = require('../models/AppConfig');
 const { ok, err, createLedgerEntry, fmtDate, RCP_YEAR } = require('../utils/helpers');
+const { EXP_TYPE_AADI } = require('../lib/constants');
 
 async function addExpense(p) {
   const year      = new Date().getFullYear();
@@ -19,7 +20,7 @@ async function addExpense(p) {
     mode: p.mode || 'Cash',
     paidBy:   p.paidBy   || '',
     paidById: p.paidById ? mongoose.Types.ObjectId.isValid(p.paidById) ? p.paidById : null : null,
-    remarks: p.remarks || '', expType: p.expType || 'Aadi Festival',
+    remarks: p.remarks || '', expType: p.expType || EXP_TYPE_AADI,
   });
 
   // ── General Ledger: auto debit entry ──
