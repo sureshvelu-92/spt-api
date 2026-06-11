@@ -1,0 +1,10 @@
+'use strict';
+const svc = require('../services/auth');
+exports.getUsers               = (req, res) => svc.getUsers().then(r => res.json(r));
+exports.addUser                = (req, res) => svc.addUser(req.query).then(r => res.json(r));
+exports.verifyPin              = (req, res) => svc.verifyPin(req.query).then(r => res.json(r));
+exports.setPin                 = (req, res) => svc.setPin(req.query).then(r => res.json(r));
+exports.webauthnRegisterOptions = (req, res) => svc.webauthnRegisterOptions(req.query).then(r => res.json(r));
+exports.webauthnRegisterVerify  = (req, res) => svc.webauthnRegisterVerify(req.query).then(r => res.json(r));
+exports.webauthnAuthOptions     = (req, res) => svc.webauthnAuthOptions(req.query).then(r => res.json(r));
+exports.webauthnAuthVerify      = (req, res) => svc.webauthnAuthVerify(req.query).then(r => res.json(r));

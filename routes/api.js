@@ -4,14 +4,14 @@ const router = require('express').Router();
 const { ok, err } = require('../utils/helpers');
 const { API_TOKEN_DEFAULT } = require('../lib/constants');
 
-// ── Domain handlers ───────────────────────────────────────
-const donations = require('../handlers/donations');
-const expenses  = require('../handlers/expenses');
-const vendors   = require('../handlers/vendors');
-const poojas    = require('../handlers/poojas');
-const reports   = require('../handlers/reports');
-const auth      = require('../handlers/auth');
-const finance   = require('../handlers/finance');
+// ── Domain controllers ────────────────────────────────────
+const donations = require('../controllers/donations');
+const expenses  = require('../controllers/expenses');
+const vendors   = require('../controllers/vendors');
+const poojas    = require('../controllers/poojas');
+const reports   = require('../controllers/reports');
+const auth      = require('../controllers/auth');
+const finance   = require('../controllers/finance');
 
 const TOKEN = process.env.API_TOKEN || API_TOKEN_DEFAULT;
 
@@ -24,82 +24,81 @@ function authMiddleware(req, res, next) {
 
 // All actions via GET (matches existing PWA calls)
 router.get('/', authMiddleware, async (req, res) => {
-  const p = req.query;
   try {
-    switch (p.action) {
+    switch (req.query.action) {
 
       case 'ping':
         return res.json(ok({ message: 'Connected ✓', version: 1 }));
 
       // ── Donations ──────────────────────────────────────
-      case 'addDonation':        return res.json(await donations.addDonation(p));
-      case 'addPooja':           return res.json(await poojas.addPooja(p));
-      case 'addInKindDonation':  return res.json(await donations.addInKind(p));
-      case 'getReceipts':        return res.json(await donations.getReceipts(p));
-      case 'getRecentDonations': return res.json(await donations.getRecentDonations(p));
-      case 'getInKindDonations': return res.json(await donations.getInKind());
-      case 'getLastSeq':         return res.json(await donations.getLastSeq('donation'));
-      case 'getLastInKindSeq':   return res.json(await donations.getLastSeq('inkind'));
-      case 'getLastExpenseSeq':  return res.json(await donations.getLastSeq('expense'));
-      case 'updateReceived':     return res.json(await donations.updateReceived(p));
-      case 'getAllData':          return res.json(await donations.getAllData());
+      case 'addDonation':        return donations.addDonation(req, res);
+      case 'addPooja':           return poojas.addPooja(req, res);
+      case 'addInKindDonation':  return donations.addInKindDonation(req, res);
+      case 'getReceipts':        return donations.getReceipts(req, res);
+      case 'getRecentDonations': return donations.getRecentDonations(req, res);
+      case 'getInKindDonations': return donations.getInKindDonations(req, res);
+      case 'getLastSeq':         return donations.getLastSeq(req, res);
+      case 'getLastInKindSeq':   return donations.getLastInKindSeq(req, res);
+      case 'getLastExpenseSeq':  return donations.getLastExpenseSeq(req, res);
+      case 'updateReceived':     return donations.updateReceived(req, res);
+      case 'getAllData':          return donations.getAllData(req, res);
 
       // ── Expenses ───────────────────────────────────────
-      case 'addExpense':          return res.json(await expenses.addExpense(p));
-      case 'getExpenses':         return res.json(await expenses.getExpenses(p));
-      case 'getYearlyExpenses':   return res.json(await expenses.getYearlyExpenses(p));
-      case 'getYearlyDonations':  return res.json(await donations.getYearlyDonations(p));
+      case 'addExpense':          return expenses.addExpense(req, res);
+      case 'getExpenses':         return expenses.getExpenses(req, res);
+      case 'getYearlyExpenses':   return expenses.getYearlyExpenses(req, res);
+      case 'getYearlyDonations':  return donations.getYearlyDonations(req, res);
 
       // ── Reports ────────────────────────────────────────
-      case 'getMonthlyReport': return res.json(await reports.getMonthlyReport(p));
-      case 'getYearlyReport':  return res.json(await reports.getYearlyReport(p));
-      case 'getOverallReport': return res.json(await reports.getOverallReport());
-      case 'getLedger':        return res.json(await reports.getLedger(p));
-      case 'getCombinedLedger': return res.json(await reports.getCombinedLedger(p));
+      case 'getMonthlyReport':  return reports.getMonthlyReport(req, res);
+      case 'getYearlyReport':   return reports.getYearlyReport(req, res);
+      case 'getOverallReport':  return reports.getOverallReport(req, res);
+      case 'getLedger':         return reports.getLedger(req, res);
+      case 'getCombinedLedger': return reports.getCombinedLedger(req, res);
 
       // ── Finance / Config ───────────────────────────────
-      case 'getConfig':         return res.json(await finance.getConfig());
-      case 'updateConfig':      return res.json(await finance.updateConfig(p));
-      case 'getSequences':      return res.json(await finance.getSequences());
-      case 'setSequence':       return res.json(await finance.setSequence(p));
-      case 'addTransaction':    return res.json(await finance.addManualTransaction(p));
-      case 'getCashHolders':    return res.json(await finance.getCashHolders(p));
-      case 'getBudget':         return res.json(await finance.getBudget(p));
-      case 'saveBudget':        return res.json(await finance.saveBudget(p));
-      case 'addBudgetItem':     return res.json(await finance.addBudgetItem(p));
-      case 'updateBudgetItem':  return res.json(await finance.updateBudgetItem(p));
-      case 'deleteBudgetItem':  return res.json(await finance.deleteBudgetItem(p));
+      case 'getConfig':         return finance.getConfig(req, res);
+      case 'updateConfig':      return finance.updateConfig(req, res);
+      case 'getSequences':      return finance.getSequences(req, res);
+      case 'setSequence':       return finance.setSequence(req, res);
+      case 'addTransaction':    return finance.addTransaction(req, res);
+      case 'getCashHolders':    return finance.getCashHolders(req, res);
+      case 'getBudget':         return finance.getBudget(req, res);
+      case 'saveBudget':        return finance.saveBudget(req, res);
+      case 'addBudgetItem':     return finance.addBudgetItem(req, res);
+      case 'updateBudgetItem':  return finance.updateBudgetItem(req, res);
+      case 'deleteBudgetItem':  return finance.deleteBudgetItem(req, res);
 
       // ── Vendors ────────────────────────────────────────
-      case 'getVendors':        return res.json(await vendors.getVendors());
-      case 'addVendor':         return res.json(await vendors.addVendor(p));
-      case 'getVendorPayables': return res.json(await vendors.getVendorPayables());
-      case 'getVendorLedger':   return res.json(await vendors.getVendorLedger(p));
-      case 'settleVendors':     return res.json(await vendors.settleVendors(p));
+      case 'getVendors':        return vendors.getVendors(req, res);
+      case 'addVendor':         return vendors.addVendor(req, res);
+      case 'getVendorPayables': return vendors.getVendorPayables(req, res);
+      case 'getVendorLedger':   return vendors.getVendorLedger(req, res);
+      case 'settleVendors':     return vendors.settleVendors(req, res);
 
       // ── Pooja Schedule ─────────────────────────────────
-      case 'getPoojaSchedule':  return res.json(await poojas.getPoojaSchedule(p));
-      case 'autoFillSchedule':  return res.json(await poojas.autoFillSchedule(p));
-      case 'approvePooja':      return res.json(await poojas.approvePooja(p));
-      case 'rejectPooja':       return res.json(await poojas.rejectPooja(p));
-      case 'markTempleFunded':  return res.json(await poojas.markTempleFunded(p));
-      case 'markPoojaComplete': return res.json(await poojas.markPoojaComplete(p));
-      case 'sponsorPooja':      return res.json(await poojas.sponsorPooja(p));
-      case 'setPoojaDate':      return res.json(await poojas.setPoojaDate(p));
-      case 'backfillPoojaDates': return res.json(await poojas.backfillPoojaDates());
+      case 'getPoojaSchedule':   return poojas.getPoojaSchedule(req, res);
+      case 'autoFillSchedule':   return poojas.autoFillSchedule(req, res);
+      case 'approvePooja':       return poojas.approvePooja(req, res);
+      case 'rejectPooja':        return poojas.rejectPooja(req, res);
+      case 'markTempleFunded':   return poojas.markTempleFunded(req, res);
+      case 'markPoojaComplete':  return poojas.markPoojaComplete(req, res);
+      case 'sponsorPooja':       return poojas.sponsorPooja(req, res);
+      case 'setPoojaDate':       return poojas.setPoojaDate(req, res);
+      case 'backfillPoojaDates': return poojas.backfillPoojaDates(req, res);
 
       // ── One-time repair ────────────────────────────────
-      case 'fixVendorTxnDates': return res.json(await poojas.fixVendorTxnDates());
+      case 'fixVendorTxnDates': return poojas.fixVendorTxnDates(req, res);
 
       // ── Auth / Users ───────────────────────────────────
-      case 'getUsers':               return res.json(await auth.getUsers());
-      case 'addUser':                return res.json(await auth.addUser(p));
-      case 'verifyPin':              return res.json(await auth.verifyPin(p));
-      case 'setPin':                 return res.json(await auth.setPin(p));
-      case 'webauthnRegisterOptions': return res.json(await auth.webauthnRegisterOptions(p));
-      case 'webauthnRegisterVerify':  return res.json(await auth.webauthnRegisterVerify(p));
-      case 'webauthnAuthOptions':     return res.json(await auth.webauthnAuthOptions(p));
-      case 'webauthnAuthVerify':      return res.json(await auth.webauthnAuthVerify(p));
+      case 'getUsers':                return auth.getUsers(req, res);
+      case 'addUser':                 return auth.addUser(req, res);
+      case 'verifyPin':               return auth.verifyPin(req, res);
+      case 'setPin':                  return auth.setPin(req, res);
+      case 'webauthnRegisterOptions': return auth.webauthnRegisterOptions(req, res);
+      case 'webauthnRegisterVerify':  return auth.webauthnRegisterVerify(req, res);
+      case 'webauthnAuthOptions':     return auth.webauthnAuthOptions(req, res);
+      case 'webauthnAuthVerify':      return auth.webauthnAuthVerify(req, res);
 
       default:
         return res.json(err('Unknown action'));

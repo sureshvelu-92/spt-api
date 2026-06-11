@@ -1,0 +1,13 @@
+'use strict';
+const svc = require('../services/donations');
+exports.addDonation        = (req, res) => svc.addDonation(req.query).then(r => res.json(r));
+exports.addInKindDonation  = (req, res) => svc.addInKind(req.query).then(r => res.json(r));
+exports.getReceipts        = (req, res) => svc.getReceipts(req.query).then(r => res.json(r));
+exports.getRecentDonations = (req, res) => svc.getRecentDonations(req.query).then(r => res.json(r));
+exports.getInKindDonations = (req, res) => svc.getInKind().then(r => res.json(r));
+exports.getLastSeq         = (req, res) => svc.getLastSeq('donation').then(r => res.json(r));
+exports.getLastInKindSeq   = (req, res) => svc.getLastSeq('inkind').then(r => res.json(r));
+exports.getLastExpenseSeq  = (req, res) => svc.getLastSeq('expense').then(r => res.json(r));
+exports.updateReceived     = (req, res) => svc.updateReceived(req.query).then(r => res.json(r));
+exports.getAllData          = (req, res) => svc.getAllData().then(r => res.json(r));
+exports.getYearlyDonations = (req, res) => svc.getYearlyDonations(req.query).then(r => res.json(r));

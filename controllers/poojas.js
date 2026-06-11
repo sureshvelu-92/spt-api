@@ -1,0 +1,13 @@
+'use strict';
+const svc = require('../services/poojas');
+exports.addPooja           = (req, res) => svc.addPooja(req.query).then(r => res.json(r));
+exports.getPoojaSchedule   = (req, res) => svc.getPoojaSchedule(req.query).then(r => res.json(r));
+exports.autoFillSchedule   = (req, res) => svc.autoFillSchedule(req.query).then(r => res.json(r));
+exports.approvePooja       = (req, res) => svc.approvePooja(req.query).then(r => res.json(r));
+exports.rejectPooja        = (req, res) => svc.rejectPooja(req.query).then(r => res.json(r));
+exports.markTempleFunded   = (req, res) => svc.markTempleFunded(req.query).then(r => res.json(r));
+exports.markPoojaComplete  = (req, res) => svc.markPoojaComplete(req.query).then(r => res.json(r));
+exports.sponsorPooja       = (req, res) => svc.sponsorPooja(req.query).then(r => res.json(r));
+exports.setPoojaDate       = (req, res) => svc.setPoojaDate(req.query).then(r => res.json(r));
+exports.backfillPoojaDates = (req, res) => svc.backfillPoojaDates().then(r => res.json(r));
+exports.fixVendorTxnDates  = (req, res) => svc.fixVendorTxnDates().then(r => res.json(r));

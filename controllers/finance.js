@@ -1,0 +1,13 @@
+'use strict';
+const svc = require('../services/finance');
+exports.getConfig        = (req, res) => svc.getConfig().then(r => res.json(r));
+exports.updateConfig     = (req, res) => svc.updateConfig(req.query).then(r => res.json(r));
+exports.getSequences     = (req, res) => svc.getSequences().then(r => res.json(r));
+exports.setSequence      = (req, res) => svc.setSequence(req.query).then(r => res.json(r));
+exports.addTransaction   = (req, res) => svc.addManualTransaction(req.query).then(r => res.json(r));
+exports.getCashHolders   = (req, res) => svc.getCashHolders(req.query).then(r => res.json(r));
+exports.getBudget        = (req, res) => svc.getBudget(req.query).then(r => res.json(r));
+exports.saveBudget       = (req, res) => svc.saveBudget(req.query).then(r => res.json(r));
+exports.addBudgetItem    = (req, res) => svc.addBudgetItem(req.query).then(r => res.json(r));
+exports.updateBudgetItem = (req, res) => svc.updateBudgetItem(req.query).then(r => res.json(r));
+exports.deleteBudgetItem = (req, res) => svc.deleteBudgetItem(req.query).then(r => res.json(r));
