@@ -584,10 +584,71 @@ function mapExpense(d) {
   };
 }
 
+// ── Custom Report ─────────────────────────────────────────
+// ?action=getCustomReport&donTypes=Pooja,Donation&expTypes=Aadi+Festival&expCategories=...&notes=...&fromDate=2026-01-01&toDate=2026-12-31
+async function getCustomReport(p) {
+  const { donTypes, expTypes, expCategories, notes, fromDate, toDate } = p;
+
+  // Date bounds (inclusive on both ends)
+  const dateFilter = {};
+  if (fromDate) dateFilter.$gte = new Date(fromDate);
+  if (toDate)   dateFilter.$lte = new Date(new Date(toDate).setHours(23, 59, 59, 999));
+
+  // ── Donation query ────────────────────────────────────────
+  const donQuery = {};
+  if (fromDate || toDate) donQuery.date = { ...dateFilter };
+  if (donTypes) {
+    const types = donTypes.split(',').map(t => t.trim()).filter(Boolean);
+    if (types.length) donQuery.donType = { $in: types };
+  }
+  if (notes && notes.trim()) {
+    donQuery.notes = { $regex: notes.trim(), $options: 'i' };
+  }
+
+  // ── Expense query ─────────────────────────────────────────
+  const expQuery = {};
+  if (fromDate || toDate) expQuery.date = { ...dateFilter };
+  if (expTypes) {
+    const types = expTypes.split(',').map(t => t.trim()).filter(Boolean);
+    if (types.length) expQuery.expType = { $in: types };
+  }
+  if (expCategories) {
+    const cats = expCategories.split(',').map(t => t.trim()).filter(Boolean);
+    if (cats.length) expQuery.category = { $in: cats };
+  }
+  if (notes && notes.trim()) {
+    expQuery.$or = [
+      { description: { $regex: notes.trim(), $options: 'i' } },
+      { remarks:     { $regex: notes.trim(), $options: 'i' } },
+    ];
+  }
+
+  const [donations, expenses] = await Promise.all([
+    Donation.find(donQuery).sort({ date: 1 }).lean(),
+    Expense.find(expQuery).sort({ date: 1 }).lean(),
+  ]);
+
+  const donTotal = donations.reduce((s, d) => s + (d.received || 0), 0);
+  const expTotal = expenses.reduce((s, e) => s + (e.amount  || 0), 0);
+
+  return ok({
+    donations: donations.map(mapDonation),
+    expenses:  expenses.map(mapExpense),
+    totals: {
+      donCount: donations.length,
+      expCount: expenses.length,
+      donTotal,
+      expTotal,
+      net: donTotal - expTotal,
+    },
+  });
+}
+
 module.exports = {
   getMonthlyReport,
   getYearlyReport,
   getOverallReport,
   getLedger,
   getCombinedLedger,
+  getCustomReport,
 };

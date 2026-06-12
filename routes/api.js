@@ -55,6 +55,7 @@ router.get('/', authMiddleware, async (req, res) => {
       case 'getOverallReport':  return reports.getOverallReport(req, res);
       case 'getLedger':         return reports.getLedger(req, res);
       case 'getCombinedLedger': return reports.getCombinedLedger(req, res);
+      case 'getCustomReport':   return reports.getCustomReport(req, res);
 
       // ── Finance / Config ───────────────────────────────
       case 'getConfig':         return finance.getConfig(req, res);
