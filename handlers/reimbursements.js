@@ -3,7 +3,7 @@
 const Reimbursement = require('../models/Reimbursement');
 const Sequence      = require('../models/Sequence');
 
-const ok  = (data)  => ({ status: 'ok',    data });
+const ok  = (data)  => ({ status: 'ok',    ...data });
 const err = (msg)   => ({ status: 'error', message: msg });
 
 function fmtDate(d) {
@@ -30,6 +30,7 @@ async function getReimbursements(p) {
     fromUser:   d.fromUser,
     toUser:     d.toUser,
     amount:     d.amount,
+    mode:       d.mode || 'Cash',
     notes:      d.notes,
     recordedBy: d.recordedBy,
     year:       d.year,
@@ -59,6 +60,7 @@ async function addReimbursement(p, body) {
     fromUser:   b.fromUser,
     toUser:     b.toUser,
     amount:     Number(b.amount),
+    mode:       b.mode || 'Cash',
     notes:      b.notes || '',
     recordedBy: b.recordedBy || '',
     year,

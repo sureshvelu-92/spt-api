@@ -6,6 +6,7 @@ const reimbursementSchema = new mongoose.Schema({
   fromUser:    { type: String, required: true },   // who hands over cash
   toUser:      { type: String, required: true },   // who receives (gets reimbursed)
   amount:      { type: Number, required: true, min: 0 },
+  mode:        { type: String, default: 'Cash' },
   notes:       { type: String, default: '' },
   recordedBy:  { type: String, default: '' },
   year:        { type: Number, default: () => new Date().getFullYear(), index: true },
