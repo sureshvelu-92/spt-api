@@ -358,6 +358,35 @@ async function deleteBudgetItem(p) {
   return ok({ message: 'Deleted' });
 }
 
+// ── Repair: reassign ALL txnNos in date order ─────────────
+// Clears every existing txnNo, resets the sequence counter,
+// then re-assigns sequential IDs sorted by date asc (then createdAt asc).
+async function fixTransactionIds() {
+  // 1. Fetch all transactions sorted by date then createdAt
+  const all = await Transaction.find({}).sort({ date: 1, createdAt: 1 }).lean();
+
+  if (all.length === 0) return ok({ fixed: 0, message: 'No transactions found' });
+
+  // 2. Reset txnSeq counter to 0
+  await AppConfig.findByIdAndUpdate(
+    'config',
+    { $set: { txnSeq: 0 } },
+    { upsert: true }
+  );
+
+  // 3. Re-assign sequential IDs
+  let fixed = 0;
+  for (const doc of all) {
+    const seq   = await AppConfig.nextSeq('txn');
+    const year  = doc.year || new Date(doc.date || doc.createdAt).getFullYear() || new Date().getFullYear();
+    const txnNo = `${year}/TXN/${seq}`;
+    await Transaction.updateOne({ _id: doc._id }, { $set: { txnNo } });
+    fixed++;
+  }
+
+  return ok({ fixed, message: `Re-assigned txnNo for all ${fixed} transaction(s) in date order` });
+}
+
 module.exports = {
   getConfig,
   updateConfig,
@@ -370,4 +399,5 @@ module.exports = {
   addBudgetItem,
   updateBudgetItem,
   deleteBudgetItem,
+  fixTransactionIds,
 };

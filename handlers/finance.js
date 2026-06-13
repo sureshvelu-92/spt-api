@@ -400,6 +400,28 @@ async function deleteBudgetItem(p) {
   return ok({ message: 'Deleted' });
 }
 
+// ── One-time repair: backfill missing txnNos ──────────────
+// Finds all Transaction docs with empty/null txnNo, sorts by date,
+// and assigns sequential IDs (picks up from where the current counter is).
+async function fixTransactionIds() {
+  const missing = await Transaction.find({
+    $or: [{ txnNo: '' }, { txnNo: null }, { txnNo: { $exists: false } }],
+  }).sort({ date: 1, createdAt: 1 }).lean();
+
+  if (missing.length === 0) return ok({ fixed: 0, message: 'No missing txnNos found' });
+
+  let fixed = 0;
+  for (const doc of missing) {
+    const seq   = await AppConfig.nextSeq('txn');
+    const year  = doc.year || new Date(doc.date || doc.createdAt).getFullYear() || new Date().getFullYear();
+    const txnNo = `${year}/TXN/${seq}`;
+    await Transaction.updateOne({ _id: doc._id }, { $set: { txnNo } });
+    fixed++;
+  }
+
+  return ok({ fixed, message: `Backfilled txnNo for ${fixed} transaction(s)` });
+}
+
 module.exports = {
   getConfig,
   updateConfig,
@@ -412,4 +434,5 @@ module.exports = {
   addBudgetItem,
   updateBudgetItem,
   deleteBudgetItem,
+  fixTransactionIds,
 };

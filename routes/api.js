@@ -92,6 +92,9 @@ router.get('/', authMiddleware, async (req, res) => {
       // ── One-time repair ────────────────────────────────
       case 'fixVendorTxnDates': return poojas.fixVendorTxnDates(req, res);
 
+      // ── One-time repairs ───────────────────────────────
+      case 'fixTransactionIds':    return finance.fixTransactionIds(req, res);
+
       // ── Reimbursements ─────────────────────────────────
       case 'getReimbursements':    return res.json(await reimbursements.getReimbursements(req.query));
       case 'addReimbursement':     return res.json(await reimbursements.addReimbursement(req.query, req.body));

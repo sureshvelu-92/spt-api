@@ -52,20 +52,31 @@ async function addDonation(p) {
   // ── General Ledger: credit entry when money is actually received ──
   if (received > 0) {
     try {
-      const isPooja = isPoojaType(p.donType);
-      await createLedgerEntry({
-        date:        donDate,
-        type:        'credit',
-        category:    isPooja ? 'Pooja Income' : 'Donation',
-        amount:      received,
-        description: p.notes || p.purpose || (isPooja ? `${p.poojaType || p.donType}${p.poojaVariant ? ` (${p.poojaVariant})` : ''}` : ''),
-        party:       p.donor || '',
-        mode:        isPend ? '' : (p.mode || 'Cash'),
-        refType:     'donation',
-        refId:       receiptNo,
-        recordedBy:  p.receivedBy || '',
-        year,
-      });
+      const Transaction = require('../models/Transaction');
+      // Guard against duplicates: donation uses upsert so the same receiptNo
+      // can arrive multiple times (re-submit, retry). Only create one txn per receipt.
+      const existingTxn = await Transaction.findOne({ refType: 'donation', refId: receiptNo }).lean();
+      if (existingTxn) {
+        // Update amount only if it changed (e.g. partial-to-full payment)
+        if (existingTxn.amount !== received) {
+          await Transaction.updateOne({ _id: existingTxn._id }, { $set: { amount: received } });
+        }
+      } else {
+        const isPooja = isPoojaType(p.donType);
+        await createLedgerEntry({
+          date:        donDate,
+          type:        'credit',
+          category:    isPooja ? 'Pooja Income' : 'Donation',
+          amount:      received,
+          description: p.notes || p.purpose || (isPooja ? `${p.poojaType || p.donType}${p.poojaVariant ? ` (${p.poojaVariant})` : ''}` : ''),
+          party:       p.donor || '',
+          mode:        isPend ? '' : (p.mode || 'Cash'),
+          refType:     'donation',
+          refId:       receiptNo,
+          recordedBy:  p.receivedBy || '',
+          year,
+        });
+      }
     } catch (e) { console.error('Ledger credit error (non-fatal):', e.message); }
   }
 
