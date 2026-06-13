@@ -362,29 +362,38 @@ async function deleteBudgetItem(p) {
 // Clears every existing txnNo, resets the sequence counter,
 // then re-assigns sequential IDs sorted by date asc (then createdAt asc).
 async function fixTransactionIds() {
-  // 1. Fetch all transactions sorted by date then createdAt
-  const all = await Transaction.find({}).sort({ date: 1, createdAt: 1 }).lean();
-
+  // 1. Fetch all transactions sorted by createdAt (when they were added)
+  const all = await Transaction.find({}).sort({ createdAt: 1 }).lean();
   if (all.length === 0) return ok({ fixed: 0, message: 'No transactions found' });
 
-  // 2. Reset txnSeq counter to 0
+  // 2. Set each txnNo to a temp unique value (its own _id string) to free up
+  //    the unique index without ever having duplicate values.
+  //    Use native collection driver to bypass mongoose 'required' validation.
+  for (const doc of all) {
+    await Transaction.collection.updateOne(
+      { _id: doc._id },
+      { $set: { txnNo: `_tmp_${doc._id}` } }
+    );
+  }
+
+  // 3. Reset txnSeq counter to 0
   await AppConfig.findByIdAndUpdate(
     'config',
     { $set: { txnSeq: 0 } },
     { upsert: true }
   );
 
-  // 3. Re-assign sequential IDs
+  // 4. Re-assign sequential IDs in createdAt order
   let fixed = 0;
   for (const doc of all) {
     const seq   = await AppConfig.nextSeq('txn');
     const year  = doc.year || new Date(doc.date || doc.createdAt).getFullYear() || new Date().getFullYear();
     const txnNo = `${year}/TXN/${seq}`;
-    await Transaction.updateOne({ _id: doc._id }, { $set: { txnNo } });
+    await Transaction.collection.updateOne({ _id: doc._id }, { $set: { txnNo } });
     fixed++;
   }
 
-  return ok({ fixed, message: `Re-assigned txnNo for all ${fixed} transaction(s) in date order` });
+  return ok({ fixed, message: `Re-assigned txnNo for ${fixed} transaction(s) in creation order` });
 }
 
 module.exports = {
