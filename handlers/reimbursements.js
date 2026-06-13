@@ -41,7 +41,7 @@ async function getReimbursements(p) {
 
 // ── ADD reimbursement ─────────────────────────────────────
 async function addReimbursement(p, body) {
-  const b = body || p;
+  const b = { ...p, ...(body || {}) };
   if (!b.fromUser) return err('fromUser is required');
   if (!b.toUser)   return err('toUser is required');
   if (b.fromUser === b.toUser) return err('fromUser and toUser must be different');
