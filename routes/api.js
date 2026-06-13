@@ -11,7 +11,8 @@ const vendors   = require('../controllers/vendors');
 const poojas    = require('../controllers/poojas');
 const reports   = require('../controllers/reports');
 const auth      = require('../controllers/auth');
-const finance   = require('../controllers/finance');
+const finance        = require('../controllers/finance');
+const reimbursements = require('../handlers/reimbursements');
 
 const TOKEN = process.env.API_TOKEN || API_TOKEN_DEFAULT;
 
@@ -90,6 +91,11 @@ router.get('/', authMiddleware, async (req, res) => {
 
       // ── One-time repair ────────────────────────────────
       case 'fixVendorTxnDates': return poojas.fixVendorTxnDates(req, res);
+
+      // ── Reimbursements ─────────────────────────────────
+      case 'getReimbursements':    return res.json(await reimbursements.getReimbursements(req.query));
+      case 'addReimbursement':     return res.json(await reimbursements.addReimbursement(req.query, req.body));
+      case 'deleteReimbursement':  return res.json(await reimbursements.deleteReimbursement(req.query));
 
       // ── Auth / Users ───────────────────────────────────
       case 'getUsers':                return auth.getUsers(req, res);

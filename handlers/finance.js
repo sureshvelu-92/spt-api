@@ -1,10 +1,11 @@
 'use strict';
 
-const AppConfig   = require('../models/AppConfig');
-const Transaction = require('../models/Transaction');
-const Donation    = require('../models/Donation');
-const Expense     = require('../models/Expense');
-const Budget      = require('../models/Budget');
+const AppConfig      = require('../models/AppConfig');
+const Transaction    = require('../models/Transaction');
+const Donation       = require('../models/Donation');
+const Expense        = require('../models/Expense');
+const Budget         = require('../models/Budget');
+const Reimbursement  = require('../models/Reimbursement');
 const { ok, err, createLedgerEntry, fmtDate, isPoojaType, RCP_YEAR } = require('../utils/helpers');
 
 // ── AppConfig ─────────────────────────────────────────────
@@ -265,6 +266,47 @@ async function getCashHolders(p) {
       expenseList:    expByPerson[name]  || [],
     };
   }).sort((a, b) => b.totalCollected - a.totalCollected);
+
+  // Factor in reimbursements: fromUser hands over cash (cashInHand ↓), toUser receives (cashInHand ↑)
+  const reimbDocs = await Reimbursement.find({ date: { $gte: from, $lt: to } }).lean();
+
+  // Build per-person reimbursement deltas
+  const reimbDelta = {};
+  for (const r of reimbDocs) {
+    reimbDelta[r.fromUser] = (reimbDelta[r.fromUser] || 0) - r.amount;
+    reimbDelta[r.toUser]   = (reimbDelta[r.toUser]   || 0) + r.amount;
+  }
+
+  // Apply deltas — add any new names that only appear in reimbursements
+  const reimbNames = new Set(reimbDocs.flatMap(r => [r.fromUser, r.toUser]));
+  for (const name of reimbNames) {
+    if (!allNames.has(name)) allNames.add(name);
+  }
+
+  for (const h of holders) {
+    if (reimbDelta[h.name] !== undefined) {
+      h.cashInHand  += reimbDelta[h.name];
+      h.reimbDelta   = reimbDelta[h.name];
+    }
+  }
+
+  // Add holders that only appear via reimbursements (no donations/expenses)
+  for (const name of reimbNames) {
+    if (!holders.find(h => h.name === name)) {
+      holders.push({
+        name,
+        userId:         null,
+        totalCollected: 0,
+        totalRemitted:  0,
+        cashInHand:     reimbDelta[name] || 0,
+        reimbDelta:     reimbDelta[name] || 0,
+        count:          0,
+        lastCollection: null,
+        incomeList:     [],
+        expenseList:    [],
+      });
+    }
+  }
 
   const grandTotal = holders.reduce((s, h) => s + h.cashInHand, 0);
 
