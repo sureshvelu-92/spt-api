@@ -10,4 +10,5 @@ exports.getBudget        = (req, res) => svc.getBudget(req.query).then(r => res.
 exports.saveBudget       = (req, res) => svc.saveBudget(req.query).then(r => res.json(r));
 exports.addBudgetItem    = (req, res) => svc.addBudgetItem(req.query).then(r => res.json(r));
 exports.updateBudgetItem = (req, res) => svc.updateBudgetItem(req.query).then(r => res.json(r));
-exports.deleteBudgetItem = (req, res) => svc.deleteBudgetItem(req.query).then(r => res.json(r));
+exports.deleteBudgetItem    = (req, res) => svc.deleteBudgetItem(req.query).then(r => res.json(r));
+exports.fixTransactionIds   = (req, res) => svc.fixTransactionIds().then(r => res.json(r));
