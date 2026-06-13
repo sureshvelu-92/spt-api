@@ -103,6 +103,7 @@ router.get('/', authMiddleware, async (req, res) => {
       // ── Auth / Users ───────────────────────────────────
       case 'getUsers':                return auth.getUsers(req, res);
       case 'addUser':                 return auth.addUser(req, res);
+      case 'updateUser':              return auth.updateUser(req, res);
       case 'verifyPin':               return auth.verifyPin(req, res);
       case 'setPin':                  return auth.setPin(req, res);
       case 'webauthnRegisterOptions': return auth.webauthnRegisterOptions(req, res);

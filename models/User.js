@@ -18,7 +18,24 @@ const userSchema = new mongoose.Schema({
   name:      { type: String, required: true },
   email:     { type: String, default: '' },
   phone:     { type: String, default: '' },
-  role:      { type: String, enum: ['admin', 'trustee', 'viewer'], default: 'trustee', index: true },
+  // Permission level — controls what the user can do in the app
+  role: {
+    type: String,
+    enum: ['admin', 'editor', 'viewer'],
+    default: 'editor',
+    index: true,
+  },
+  // Committee position — their title/designation in the temple trust
+  committeeRole: {
+    type: String,
+    enum: [
+      'President', 'Vice President',
+      'General Secretary', 'Secretary', 'Joint Secretary',
+      'Treasurer', 'Joint Treasurer',
+      'Executive Member', 'Member', 'Volunteer',
+    ],
+    default: 'Member',
+  },
   isActive:  { type: Boolean, default: true, index: true },
   pin:       { type: String, default: '1234' }, // 4-digit PIN for login
   createdBy: { type: String, default: '' },

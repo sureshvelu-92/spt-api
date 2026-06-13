@@ -19,6 +19,10 @@ const appConfigSchema = new mongoose.Schema({
   expenseSeq:     { type: Number, default: 0 },
   txnSeq:         { type: Number, default: 0 },
 
+  // ── App versioning ────────────────────────────────────────
+  appVersion: { type: String, default: '1.0.0' }, // current deployed version (informational)
+  minVersion: { type: String, default: '1.0.0' }, // minimum client version required
+
   // ── Auth & integrations ──────────────────────────────────
   apiToken:       { type: String, default: API_TOKEN_DEFAULT },
   youtubeChannel: { type: String, default: TEMPLE_YT_URL },

@@ -26,18 +26,48 @@ async function getUsers() {
 
 async function addUser(p) {
   if (!p.name || !p.name.trim()) return err('name required');
-  const validRoles = ['admin', 'trustee', 'viewer'];
-  const role = validRoles.includes(p.role) ? p.role : 'trustee';
-  const pin = /^\d{4}$/.test(p.pin || '') ? p.pin : '1234';
+  const validRoles = ['admin', 'editor', 'viewer'];
+  const validCommitteeRoles = [
+    'President', 'Vice President',
+    'General Secretary', 'Secretary', 'Joint Secretary',
+    'Treasurer', 'Joint Treasurer',
+    'Executive Member', 'Member', 'Volunteer',
+  ];
+  // Support legacy 'trustee' role — map to 'editor'
+  const rawRole = p.role === 'trustee' ? 'editor' : p.role;
+  const role          = validRoles.includes(rawRole) ? rawRole : 'editor';
+  const committeeRole = validCommitteeRoles.includes(p.committeeRole) ? p.committeeRole : 'Member';
+  const pin           = /^\d{4}$/.test(p.pin || '') ? p.pin : '1234';
   const user = await User.create({
-    name:      p.name.trim(),
-    email:     p.email     || '',
-    phone:     p.phone     || '',
+    name:          p.name.trim(),
+    email:         p.email     || '',
+    phone:         p.phone     || '',
     role,
-    isActive:  p.isActive !== 'false',
+    committeeRole,
+    isActive:      p.isActive !== 'false',
     pin,
-    createdBy: p.createdBy || '',
+    createdBy:     p.createdBy || '',
   });
+  return ok({ data: user });
+}
+
+async function updateUser(p) {
+  if (!p.id) return err('id required');
+  const validRoles = ['admin', 'editor', 'viewer'];
+  const validCommitteeRoles = [
+    'President', 'Vice President',
+    'General Secretary', 'Secretary', 'Joint Secretary',
+    'Treasurer', 'Joint Treasurer',
+    'Executive Member', 'Member', 'Volunteer',
+  ];
+  const update = {};
+  if (p.role          && validRoles.includes(p.role))               update.role          = p.role;
+  if (p.committeeRole && validCommitteeRoles.includes(p.committeeRole)) update.committeeRole = p.committeeRole;
+  if (p.isActive !== undefined) update.isActive = p.isActive !== 'false';
+  if (p.email !== undefined)    update.email    = p.email;
+  if (p.phone !== undefined)    update.phone    = p.phone;
+  const user = await User.findByIdAndUpdate(p.id, { $set: update }, { new: true }).lean();
+  if (!user) return err('User not found');
   return ok({ data: user });
 }
 
@@ -180,6 +210,7 @@ async function webauthnAuthVerify(p) {
 module.exports = {
   getUsers,
   addUser,
+  updateUser,
   verifyPin,
   setPin,
   webauthnRegisterOptions,
